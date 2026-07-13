@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# voice2text: output of `uv run python -m voice2text.recorder`
+recording.wav
