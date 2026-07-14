@@ -13,25 +13,52 @@ daemon worker thread drains the queue, transcribes, and pastes. No asyncio.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.metadata
 import logging
+import os
 import queue
 import sys
 import threading
 import time
+from typing import IO
 
 import numpy as np
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 from PyObjCTools import AppHelper
 
 from voice2text import config
+from voice2text.corrections import CorrectionWatcher
 from voice2text.hotkey import HotkeyListener
 from voice2text.overlay import Overlay, ResultWindow
 from voice2text.paster import Paster
 from voice2text.recorder import Recorder
 from voice2text.transcriber import Transcriber
+from voice2text.vocabulary import Vocabulary
 
 logger = logging.getLogger(__name__)
+
+
+def _acquire_single_instance_lock() -> IO[str] | None:
+    """Hold an exclusive lock so only one voice2text runs at a time.
+
+    Two instances would each install an Fn tap and both paste on every
+    key-release — duplicate text. Returns the open lock file (keep it alive for
+    the process lifetime), or None if another instance already holds it.
+    """
+    lock_path = config.VOCAB_PATH.parent / "voice2text.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 
 def _app_version() -> str:
@@ -83,6 +110,8 @@ def _worker_loop(
     overlay: Overlay,
     result_window: ResultWindow,
     window_mode: str,
+    vocabulary: Vocabulary,
+    watcher: CorrectionWatcher,
 ) -> None:
     """Drain queued utterances: transcribe, paste, update UI, log latency.
 
@@ -96,9 +125,14 @@ def _worker_loop(
             break
         t_keyup, audio = item
         try:
+            # Learn from any edit the user made to the *previous* paste before
+            # starting this one (best-effort; no-op where AX can't read).
+            watcher.check_for_correction()
+
             audio_seconds = len(audio) / config.SAMPLE_RATE
             t_start = time.perf_counter()
-            text = transcriber.transcribe(audio)
+            text = transcriber.transcribe(audio, initial_prompt=vocabulary.initial_prompt())
+            text = vocabulary.apply_substitutions(text)
             t_transcribed = time.perf_counter()
 
             AppHelper.callAfter(overlay.hide)
@@ -112,6 +146,12 @@ def _worker_loop(
 
             outcome = paster.paste(text)
             t_pasted = time.perf_counter()
+
+            if outcome.pasted:
+                # Let the paste land, then snapshot the field so a later edit
+                # can be detected as a correction.
+                time.sleep(0.15)
+                watcher.note_paste(text)
 
             if _should_show_window(window_mode, outcome.pasted):
                 reason = outcome.reason if not outcome.pasted else ""
@@ -154,6 +194,11 @@ def main() -> None:
         action="store_true",
         help='keep spoken filler words ("um", "uh", ...) instead of stripping them',
     )
+    parser.add_argument(
+        "--no-learn",
+        action="store_true",
+        help="disable learning custom vocabulary from your in-place corrections",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -161,6 +206,16 @@ def main() -> None:
         format="%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Refuse to start a second instance — two would both paste every utterance.
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        print(
+            "voice2text is already running (another instance holds the lock).\n"
+            "Quit that one first (Ctrl+C in its terminal), or run:  pkill -f voice2text",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     _print_banner(args.model)
 
@@ -182,10 +237,30 @@ def main() -> None:
     overlay = Overlay(level_provider=recorder.level)  # live waveform reacts to mic
     result_window = ResultWindow()
 
+    vocabulary = Vocabulary()
+    learn_enabled = config.LEARN_CORRECTIONS and not args.no_learn
+    watcher = CorrectionWatcher(on_learn=vocabulary.learn, enabled=learn_enabled)
+    if learn_enabled and not watcher.available:
+        logger.info("Correction learning: Accessibility unavailable; substitutions still apply")
+    elif learn_enabled:
+        logger.info("Correction learning on (edit a pasted word to teach it)")
+    terms = vocabulary.terms()
+    if terms:
+        logger.info("Loaded %d custom vocabulary term(s)", len(terms))
+
     work_queue: queue.Queue[tuple[float, np.ndarray] | None] = queue.Queue()
     worker = threading.Thread(
         target=_worker_loop,
-        args=(work_queue, transcriber, paster, overlay, result_window, args.show_result_window),
+        args=(
+            work_queue,
+            transcriber,
+            paster,
+            overlay,
+            result_window,
+            args.show_result_window,
+            vocabulary,
+            watcher,
+        ),
         name="voice2text-worker",
         daemon=True,
     )

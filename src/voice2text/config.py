@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 # Transcription. Override the model with VOICE2TEXT_MODEL or the --model CLI flag.
 MODEL_NAME: str = os.environ.get("VOICE2TEXT_MODEL", "small.en")
@@ -29,6 +30,21 @@ REMOVE_FILLERS: bool = os.environ.get("VOICE2TEXT_REMOVE_FILLERS", "1").lower() 
 # Whole-word tokens removed when REMOVE_FILLERS is on. Kept conservative so real
 # words are never dropped (e.g. "hmm"/"like"/"so" are intentionally excluded).
 FILLER_WORDS: tuple[str, ...] = ("um", "umm", "uh", "uhh", "uhm", "erm", "er")
+
+# Custom vocabulary + learned corrections store (JSON). Override the location
+# with VOICE2TEXT_VOCAB. Terms bias transcription; substitutions are applied
+# literally to the result.
+_APP_SUPPORT: Path = Path.home() / "Library" / "Application Support" / "voice2text"
+VOCAB_PATH: Path = Path(os.environ.get("VOICE2TEXT_VOCAB", str(_APP_SUPPORT / "vocabulary.json")))
+
+# Automatically learn from in-place corrections (best-effort, via Accessibility).
+# Disable with VOICE2TEXT_LEARN=0 or the --no-learn CLI flag.
+LEARN_CORRECTIONS: bool = os.environ.get("VOICE2TEXT_LEARN", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "",
+)
 
 # kCGEventFlagMaskSecondaryFn — the Fn key bit in CGEvent flags.
 FN_FLAG_MASK: int = 0x800000

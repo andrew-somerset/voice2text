@@ -142,10 +142,12 @@ class Transcriber:
             (warmed - loaded) * 1000,
         )
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, initial_prompt: str = "") -> str:
         """Transcribe 16kHz mono float32 audio in [-1, 1].
 
-        Returns "" for utterances that are too short or transcribe to junk.
+        ``initial_prompt`` biases whisper toward custom vocabulary (software
+        names, jargon); the caller builds it so this module stays decoupled
+        from the vocabulary store. Returns "" for too-short or junk utterances.
         """
         if too_short(audio):
             logger.debug(
@@ -160,7 +162,8 @@ class Transcriber:
             audio = np.pad(audio, (0, min_samples - audio.size))
 
         start = time.perf_counter()
-        segments = self._model.transcribe(audio)
+        kwargs = {"initial_prompt": initial_prompt} if initial_prompt else {}
+        segments = self._model.transcribe(audio, **kwargs)
         elapsed_ms = (time.perf_counter() - start) * 1000
         text = " ".join(segment.text.strip() for segment in segments)
         if self._remove_fillers:

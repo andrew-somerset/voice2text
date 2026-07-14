@@ -63,6 +63,8 @@ Flags:
 - `--keep-fillers` — keep spoken filler words. By default voice2text strips a conservative set
   (`um`, `uh`, `uhh`, `uhm`, `erm`, `er`) from the transcript; real words are never dropped (e.g.
   "summer" is untouched). Also settable via `VOICE2TEXT_REMOVE_FILLERS=0`.
+- `--no-learn` — disable learning custom vocabulary from your in-place corrections (see below).
+  Also settable via `VOICE2TEXT_LEARN=0`.
 
 On startup a banner shows the model in use and the first-run permissions checklist, and a log
 line reports the model load + warmup time. The app runs with no Dock icon or menu bar. Once it
@@ -74,6 +76,37 @@ says it's listening:
 
 Note: pasting works by briefly replacing your clipboard. The previous clipboard contents (plain
 text only) are restored automatically about 300ms after the paste.
+
+### Custom vocabulary & learning
+
+voice2text keeps a small vocabulary store (JSON at
+`~/Library/Application Support/voice2text/vocabulary.json`, override with `VOICE2TEXT_VOCAB`) that
+improves accuracy on names and jargon two ways:
+
+- **Biasing** — your terms are fed to whisper as an initial prompt, nudging it toward the right
+  spelling (probabilistic — it helps, it doesn't guarantee).
+- **Substitutions** — learned `wrong → right` fixes are applied to every transcript afterwards.
+  Deterministic: once learned, always applied, in every app.
+
+**Learning from your corrections (automatic, best-effort).** When you dictate and then *fix a word
+in place* — e.g. it types "cube control" and you change it to "kubectl" — voice2text notices on your
+next dictation and learns `cube control → kubectl`. It reads the corrected text through macOS's
+Accessibility API, which works in native text fields (TextEdit, Notes, Mail, many others) but **not
+in every app** — notably VS Code / Electron apps and some browser fields don't expose their text, so
+corrections there can't be auto-detected. Every learned correction is printed to the log, and you
+can undo a wrong one with `forget` (below). Turn the whole thing off with `--no-learn`.
+
+**Managing the vocabulary by hand:**
+
+```bash
+uv run python -m voice2text.vocabulary list
+uv run python -m voice2text.vocabulary add kubectl
+uv run python -m voice2text.vocabulary learn cube control :: kubectl   # wrong :: right
+uv run python -m voice2text.vocabulary forget cube control             # undo a learned fix
+```
+
+(Capitalization-only fixes like "github" → "GitHub" aren't auto-learned — add the term with `add`
+so biasing can pick it up instead.)
 
 ### The copy-the-text window
 
@@ -95,6 +128,7 @@ uv run python -m voice2text.recorder     # records 3s from the mic and saves a w
 uv run python -m voice2text.transcriber tests/fixtures/hello.wav   # prints the transcript
 uv run python -m voice2text.paster       # pastes a test string via clipboard + Cmd+V
 uv run python -m voice2text.overlay      # flashes the listening pill + result window (bottom-center)
+uv run python -m voice2text.vocabulary list   # manage custom vocabulary / learned corrections
 ```
 
 ## Running tests
