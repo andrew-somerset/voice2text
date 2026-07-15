@@ -6,7 +6,9 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Greenfield in this checkout. Build and test the Windows-safe milestones locally now. Live Glean authentication remains behind an interface and a mock until GM's Glean administrators register the integration.
+Milestones 1–7 are implemented on `gm_dev`: project skeleton, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Raw Input, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. Isolated Milestone 8 primitives now cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 84 passing tests plus clean Ruff lint and formatting checks.
+
+Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The OAuth and Chat components are not wired into `main.py`. Do not describe the current build as end-to-end complete or GM-deployment-ready.
 
 ## Tech stack
 
@@ -108,7 +110,7 @@ These Windows details are security and latency requirements. Do not substitute b
 - Load the model **once at startup** and keep it resident. Per-utterance model loading costs 1–2s and destroys the latency budget.
 - Run one dummy inference on approximately one second of silence at startup so allocations and native initialization occur before the first utterance.
 - Use `language="en"`, join segment text, disable printing/progress, and benchmark `n_threads` rather than assuming every logical core is faster.
-- Input contract: 16kHz mono float32 numpy array in [-1, 1]. Whisper requires exactly this — resample nothing, record at 16kHz from the start.
+- Input contract at the `Transcriber` boundary: 16kHz mono float32 numpy array in [-1, 1]. The recorder converts a native WASAPI shared-mode rate to this contract locally; the transcriber itself must never resample or accept another rate.
 - Drop utterances shorter than ~0.3s (accidental taps) — whisper hallucinates on near-empty audio ("Thank you." on silence is the classic failure). Also strip leading/trailing whitespace and discard results that are only punctuation.
 - Production must load a locally managed model by path and verify its SHA-256 checksum before use. Never download a model at runtime on a GM endpoint.
 - Record benchmark results by laptop model, CPU, Whisper model, thread count, utterance duration, and release-to-result latency. Do not claim the 700ms target until measured on representative hardware.
@@ -116,7 +118,7 @@ These Windows details are security and latency requirements. Do not substitute b
 ### Audio (recorder.py)
 - Use `sounddevice.InputStream`, channels=1, dtype="float32", through WASAPI shared mode.
 - Open and configure the stream object once, but activate it only during recording so Windows does not show the microphone as continuously in use. Measure key-down-to-first-frame latency and clipping on GM hardware.
-- Request 16kHz when supported. If a managed microphone only supports another shared-mode rate, fail with an actionable diagnostic until a reviewed resampler is added; do not silently pass non-16kHz audio to Whisper.
+- Capture at the default WASAPI device's native shared-mode rate. Convert to Whisper's 16kHz contract locally with the pinned `soxr` dependency using its high-quality mode; test output length, dtype, and signal integrity. Never silently pass non-16kHz audio to Whisper.
 - Buffer as a list of numpy chunks appended in the callback; concatenate on stop.
 - Keep audio in memory only. Zero/drop references after transcription and never write temporary WAV files outside explicit manual-test commands.
 
@@ -133,6 +135,7 @@ These Windows details are security and latency requirements. Do not substitute b
 - Request only the approved `CHAT` scope and `offline_access` only if GM allows refresh tokens. Glean must enforce the signed-in user's existing permissions.
 - Protect refresh tokens for the current Windows user with DPAPI (`CryptProtectData`) or Windows Credential Manager. Never use machine-wide DPAPI protection, plaintext files, environment variables, logs, or source control for production tokens.
 - Discover tenant OAuth endpoints from server metadata. Tenant URL, client ID, redirect URI, scopes, and optional chat application ID are managed configuration—not source constants.
+- Send streaming requests to `POST /rest/api/v1/chat` with `stream: true`; never treat the OpenAPI `#stream` operation label as a transmissible URL fragment.
 - Stream answers and citation metadata. Handle 401 refresh, 403 policy denial, 408 timeout, and 429 rate limiting without exposing response bodies in logs.
 - Whether Glean saves a chat is an administrator-controlled policy. `saveChat=false` does not imply that audit or retention records do not exist.
 
@@ -185,14 +188,14 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 
 ## Milestones (build in this order)
 
-1. **Skeleton** — package layout, configuration, protocols, ruff, pytest, and Windows-focused README.
-2. **Gesture** — pure state machine and exhaustive timing tests.
-3. **Windows input** — Raw Input adapter that reports only Right Ctrl transitions. Manual test on this Windows machine and security review of the approach.
-4. **Recorder** — WASAPI recording active only during capture. Manual playback test and first-frame latency measurement.
-5. **Transcriber** — resident/warmed CPU model, fixture test, short-input rejection, and model benchmark on representative hardware.
-6. **Paster** — Win32 clipboard, Ctrl+V, and plain-text restoration. Manual test in GM-standard applications.
-7. **Mock Glean UX** — double-tap/third-tap flow, overlay, streamed fake answer, citations, cancellation, and error states.
-8. **Glean authentication/API** — admin-registered OAuth client, DPAPI token storage, Chat API streaming, and permission tests.
+1. **Skeleton — complete** — package layout, configuration, protocols, ruff, pytest, and Windows-focused README.
+2. **Gesture — complete** — pure state machine and exhaustive timing tests.
+3. **Windows input — prototype validated** — Raw Input adapter reports only Right Ctrl transitions; registration and cleanup passed on this machine. GM security review remains required.
+4. **Recorder — prototype validated** — WASAPI capture is active only during recording; native 48 kHz capture and local 16 kHz conversion passed on this machine. Representative-device latency and clipping tests remain required.
+5. **Transcriber — prototype validated** — resident/warmed CPU model, short-input rejection, checksum enforcement, and known-content benchmark passed. Representative GM laptop/model selection remains required.
+6. **Paster — prototype validated** — Win32 clipboard, balanced Ctrl+V, and plain-text restoration passed in a disposable focused control. GM-standard application and EDR validation remains required.
+7. **Mock Glean UX — complete** — network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible overlay lifecycle passed.
+8. **Glean authentication/API — isolated primitives complete; live validation blocked** — public-client PKCE, current-user DPAPI token storage, mocked Chat streaming, citation parsing, bounded responses, and sanitized error mapping pass. Admin registration and two-user permission tests remain required before runtime wiring.
 9. **Integration** — queues, lifecycle, tray behavior, device changes, lock/unlock, startup checks, and full end-to-end test.
 10. **Enterprise packaging** — x64 one-folder executable, signed binaries and installer, managed model payload, SBOM, vulnerability/license scan, and Intune/SCCM pilot.
 
