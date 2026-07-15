@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, the compact recording pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. The bounded Right Alt recording-pill test now opens the selected trigger listener and WASAPI stream and exits cleanly; visible meter behavior still requires user observation. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 116 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, the compact recording pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. The bounded Right Alt recording-pill test now opens the selected trigger listener and WASAPI stream and exits cleanly; visible meter behavior still requires user observation. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 120 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The OAuth and Chat components are not wired into `main.py`. Do not describe the current build as end-to-end complete or GM-deployment-ready.
 
@@ -143,7 +143,7 @@ These Windows details are security and latency requirements. Do not substitute b
 - Show a compact bottom-center always-on-top pill whenever local or Ask Glean capture is active. Local recording uses green; Ask Glean uses orange. The selected trigger name must appear in the release/stop instruction.
 - Animate a short bar meter from the recorder's latest normalized `0..1` scalar. Do not keep level history, transfer audio buffers, draw a waveform, or infer/persist speech content.
 - Tk owns all widgets and cleanup on its dedicated UI thread. Other threads may send only immutable commands through a queue.
-- The bounded `--test-recording-pill` route exercises Raw Input, gesture deadlines, WASAPI, the scalar meter, cancellation, and cleanup without transcription, paste, Glean, or disk persistence. Completed test audio must be zeroed immediately.
+- The `--test-recording-pill` route runs until the pill's close action or `Ctrl+C` by default; `--test-seconds` adds an optional positive bound. It exercises Raw Input, gesture deadlines, WASAPI, the scalar meter, cancellation, and cleanup without transcription, paste, Glean, or disk persistence. Completed test audio must be zeroed immediately. Safe terminal diagnostics may name only the configured trigger and `DOWN`, `UP`, or identity-free chord suppression.
 
 ### Pasting (paster.py)
 - Write UTF-16 text through the Win32 clipboard APIs using `CF_UNICODETEXT`, then synthesize Ctrl+V with `SendInput`.
@@ -182,7 +182,7 @@ uv sync
 uv run voice2text --configure-trigger
 uv run voice2text --configure-trigger right-alt
 uv run voice2text --list-triggers
-uv run voice2text --test-recording-pill --test-seconds 60
+uv run voice2text --test-recording-pill
 uv run voice2text
 uv run pytest
 uv run ruff check .

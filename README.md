@@ -46,7 +46,7 @@ Validated on this Windows machine:
 - current-user DPAPI round trips plus mocked OAuth and Chat transport behavior;
 - a bounded recording-pill hardware test opened the selected Right Alt listener and WASAPI stream,
 	exited successfully, and left no Python process behind;
-- all 116 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- all 120 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
@@ -110,11 +110,16 @@ downloads a production model at runtime.
 
 ## Test the selected trigger and recording pill now
 
-Run this bounded hardware test from PowerShell:
+Run the hardware test from PowerShell. It remains active until explicitly stopped:
 
 ```powershell
-uv run voice2text --test-recording-pill --test-seconds 60
+uv run voice2text --test-recording-pill
 ```
+
+A blue **Voice trigger ready** pill appears briefly on startup. The terminal also prints only safe
+configured-trigger diagnostics such as `Right Alt: DOWN`, `Right Alt: UP`, or `combination
+suppressed`; it never prints the unrelated key identity. For an optional time-limited check, add
+`--test-seconds 60`.
 
 Then:
 
@@ -129,8 +134,8 @@ Then:
 
 This mode deliberately performs no Whisper inference, clipboard operation, paste, file write, or
 network request. Audio remains in memory, is zeroed immediately after each completed test hold, and
-is discarded on cancellation or shutdown. Press `Ctrl+C`, click the pill's **X**, or wait for the
-bounded timer to end.
+is discarded on cancellation or shutdown. Press `Ctrl+C` or click the pill's **X** to stop; an
+optional `--test-seconds` value also ends it automatically.
 
 ## Safe checks
 
