@@ -10,6 +10,19 @@ from voice2text.recording_pill import (
 )
 
 
+def test_ready_pill_confirms_listener_and_selected_trigger() -> None:
+    state = RecordingPillModel().apply(
+        RecordingPillCommand(
+            RecordingPillCommandKind.SHOW_READY,
+            trigger_name="Right Alt",
+        )
+    )
+
+    assert state.status is RecordingPillStatus.READY
+    assert state.title == "Voice trigger ready"
+    assert state.hint == "Hold Right Alt to test"
+
+
 def test_local_pill_names_selected_trigger_and_accepts_level() -> None:
     model = RecordingPillModel()
 

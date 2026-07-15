@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--test-seconds",
         type=float,
-        default=45.0,
-        help="bounded duration for --test-recording-pill (default: 45)",
+        default=None,
+        help="optional bounded duration for --test-recording-pill; default runs until stopped",
     )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser

@@ -22,6 +22,7 @@ class RecordingPillStatus(Enum):
     """User-visible states rendered by the compact pill."""
 
     HIDDEN = auto()
+    READY = auto()
     LOCAL_RECORDING = auto()
     GLEAN_RECORDING = auto()
     COMPLETE = auto()
@@ -31,6 +32,7 @@ class RecordingPillStatus(Enum):
 class RecordingPillCommandKind(Enum):
     """Immutable commands accepted from non-UI threads."""
 
+    SHOW_READY = auto()
     SHOW_LOCAL = auto()
     SHOW_GLEAN = auto()
     SHOW_COMPLETE = auto()
@@ -88,6 +90,12 @@ class RecordingPillModel:
             RecordingPillCommandKind.SHUTDOWN,
         }:
             self._state = RecordingPillState()
+        elif command.kind is RecordingPillCommandKind.SHOW_READY:
+            self._state = RecordingPillState(
+                status=RecordingPillStatus.READY,
+                title="Voice trigger ready",
+                hint=f"Hold {command.trigger_name} to test",
+            )
         elif command.kind is RecordingPillCommandKind.SHOW_LOCAL:
             self._state = RecordingPillState(
                 status=RecordingPillStatus.LOCAL_RECORDING,
@@ -167,6 +175,9 @@ class RecordingPill:
 
     def show_local(self, trigger_name: str) -> None:
         self._enqueue(RecordingPillCommandKind.SHOW_LOCAL, trigger_name=trigger_name)
+
+    def show_ready(self, trigger_name: str) -> None:
+        self._enqueue(RecordingPillCommandKind.SHOW_READY, trigger_name=trigger_name)
 
     def show_glean(self, trigger_name: str) -> None:
         self._enqueue(RecordingPillCommandKind.SHOW_GLEAN, trigger_name=trigger_name)
@@ -342,6 +353,7 @@ class RecordingPill:
             return
 
         accents = {
+            RecordingPillStatus.READY: "#60a5fa",
             RecordingPillStatus.LOCAL_RECORDING: "#22c55e",
             RecordingPillStatus.GLEAN_RECORDING: "#f97316",
             RecordingPillStatus.COMPLETE: "#60a5fa",

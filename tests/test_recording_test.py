@@ -4,7 +4,12 @@ import numpy as np
 
 from voice2text.gesture import GestureEvent, GestureEventKind
 from voice2text.hotkey import TriggerTransitionKind
-from voice2text.recording_test import RecordingTestController, _input_kind
+from voice2text.main import build_parser
+from voice2text.recording_test import (
+    RecordingTestController,
+    _input_kind,
+    _transition_message,
+)
 
 
 class FakeRecorder:
@@ -34,6 +39,9 @@ class FakeRecorder:
 class FakePill:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+
+    def show_ready(self, trigger_name: str) -> None:
+        self.calls.append(("ready", trigger_name))
 
     def show_local(self, trigger_name: str) -> None:
         self.calls.append(("local", trigger_name))
@@ -78,6 +86,24 @@ def test_local_test_route_shows_meter_and_zeroes_discarded_audio() -> None:
     assert ("complete", "1.0s captured - test audio discarded") in pill.calls
     assert recorder.last_audio is not None
     assert np.count_nonzero(recorder.last_audio) == 0
+
+
+def test_ready_feedback_expires_without_opening_microphone() -> None:
+    recorder = FakeRecorder()
+    pill = FakePill()
+    controller = RecordingTestController(
+        trigger_name="Right Alt",
+        recorder=recorder,
+        pill=pill,
+    )
+
+    controller.show_ready(1_000_000_000)
+    controller.refresh(2_499_999_999)
+    assert pill.calls[-1] == ("ready", "Right Alt")
+    controller.refresh(2_500_000_000)
+
+    assert recorder.starts == 0
+    assert pill.calls[-1] == ("hide", None)
 
 
 def test_local_cancel_discards_without_completion_feedback() -> None:
@@ -146,3 +172,20 @@ def test_transition_kind_mapping_includes_identity_free_chord() -> None:
     assert _input_kind(TriggerTransitionKind.DOWN).name == "DOWN"
     assert _input_kind(TriggerTransitionKind.UP).name == "UP"
     assert _input_kind(TriggerTransitionKind.CHORD).name == "CHORD"
+
+
+def test_manual_test_is_indefinite_by_default_with_optional_bound() -> None:
+    indefinite = build_parser().parse_args(["--test-recording-pill"])
+    bounded = build_parser().parse_args(["--test-recording-pill", "--test-seconds", "60"])
+
+    assert indefinite.test_seconds is None
+    assert bounded.test_seconds == 60.0
+
+
+def test_transition_diagnostics_reveal_no_unrelated_key_identity() -> None:
+    assert _transition_message("Right Alt", TriggerTransitionKind.DOWN) == "Right Alt: DOWN"
+    assert _transition_message("Right Alt", TriggerTransitionKind.UP) == "Right Alt: UP"
+    assert (
+        _transition_message("Right Alt", TriggerTransitionKind.CHORD)
+        == "Right Alt: combination suppressed"
+    )

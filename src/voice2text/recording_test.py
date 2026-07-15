@@ -27,6 +27,7 @@ from voice2text.recording_pill import RecordingPill
 
 _LEVEL_REFRESH_NS = 33_000_000
 _COMPLETE_VISIBLE_NS = 900_000_000
+_READY_VISIBLE_NS = 1_500_000_000
 
 
 class RecordingPillTestError(RuntimeError):
@@ -48,6 +49,8 @@ class RecorderSurface(Protocol):
 
 
 class PillSurface(Protocol):
+    def show_ready(self, trigger_name: str) -> None: ...
+
     def show_local(self, trigger_name: str) -> None: ...
 
     def show_glean(self, trigger_name: str) -> None: ...
@@ -95,6 +98,12 @@ class RecordingTestController:
                     event.timestamp_ns,
                     message="Recording limit reached - audio discarded",
                 )
+
+    def show_ready(self, timestamp_ns: int) -> None:
+        """Confirm that the test listener is active before the first trigger press."""
+
+        self._pill.show_ready(self._trigger_name)
+        self._hide_deadline_ns = timestamp_ns + _READY_VISIBLE_NS
 
     def refresh(self, timestamp_ns: int) -> None:
         """Publish only the scalar meter level and expire transient completion feedback."""
@@ -145,7 +154,7 @@ class RecordingTestController:
 def run_recording_pill_test(
     config: AppConfig,
     *,
-    duration_seconds: float = 45.0,
+    duration_seconds: float | None = None,
     recorder_factory: Callable[[], Recorder] | None = None,
     pill_factory: Callable[[Callable[[], None]], RecordingPill] | None = None,
     listener_factory: Callable[
@@ -156,8 +165,8 @@ def run_recording_pill_test(
 ) -> None:
     """Exercise the real trigger, microphone, and pill without inference, paste, or network."""
 
-    if not 5.0 <= duration_seconds <= 300.0:
-        raise ValueError("recording pill test duration must be between 5 and 300 seconds")
+    if duration_seconds is not None and duration_seconds <= 0:
+        raise ValueError("recording pill test duration must be positive")
 
     transitions: queue.Queue[TriggerTransition] = queue.Queue()
     stop_requested = threading.Event()
@@ -187,24 +196,32 @@ def run_recording_pill_test(
         recorder.open()
         listener.start()
         listener_started = True
+        controller.show_ready(time.monotonic_ns())
+        duration_label = (
+            f"for {duration_seconds:g} seconds" if duration_seconds is not None else "until stopped"
+        )
         print(
-            f"Recording-pill test is listening for {config.trigger.display_name} for "
-            f"{duration_seconds:g} seconds."
+            f"Recording-pill test is listening for {config.trigger.display_name} {duration_label}.",
+            flush=True,
         )
         print(
             f"Hold {config.trigger.display_name} and speak; release to discard the test audio. "
             "Key combinations should not open the pill. Press Ctrl+C to finish early."
         )
 
-        end_ns = time.monotonic_ns() + round(duration_seconds * 1_000_000_000)
+        end_ns = (
+            time.monotonic_ns() + round(duration_seconds * 1_000_000_000)
+            if duration_seconds is not None
+            else None
+        )
         next_level_ns = time.monotonic_ns()
         while not stop_requested.is_set():
             now_ns = time.monotonic_ns()
-            if now_ns >= end_ns:
+            if end_ns is not None and now_ns >= end_ns:
                 break
 
             gesture_deadline_ns = machine.next_deadline_ns
-            wake_ns = min(end_ns, next_level_ns)
+            wake_ns = next_level_ns if end_ns is None else min(end_ns, next_level_ns)
             if gesture_deadline_ns is not None:
                 wake_ns = min(wake_ns, gesture_deadline_ns)
             timeout_seconds = max(0.0, (wake_ns - now_ns) / 1_000_000_000)
@@ -215,6 +232,7 @@ def run_recording_pill_test(
 
             now_ns = time.monotonic_ns()
             while transition is not None:
+                print(_transition_message(config.trigger.display_name, transition.kind), flush=True)
                 controller.handle(
                     machine.handle(
                         GestureInput(
@@ -266,3 +284,9 @@ def _input_kind(kind: TriggerTransitionKind) -> InputKind:
         TriggerTransitionKind.CHORD: InputKind.CHORD,
     }
     return mapping[kind]
+
+
+def _transition_message(trigger_name: str, kind: TriggerTransitionKind) -> str:
+    if kind is TriggerTransitionKind.CHORD:
+        return f"{trigger_name}: combination suppressed"
+    return f"{trigger_name}: {kind.name}"
