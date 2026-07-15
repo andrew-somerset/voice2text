@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. Isolated Milestone 8 primitives now cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 100 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, the compact recording pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. The bounded Right Alt recording-pill test now opens the selected trigger listener and WASAPI stream and exits cleanly; visible meter behavior still requires user observation. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 116 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The OAuth and Chat components are not wired into `main.py`. Do not describe the current build as end-to-end complete or GM-deployment-ready.
 
@@ -36,6 +36,8 @@ voice2text/
 │   ├── trigger_settings.py # reviewed choices and atomic per-user persistence
 │   ├── trigger_setup.py # installer/first-run trigger picker
 │   ├── recorder.py      # WASAPI/sounddevice capture into a buffer
+│   ├── recording_pill.py # compact recording indicator and scalar meter
+│   ├── recording_test.py # bounded trigger/microphone/pill hardware test
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
 │   ├── auth.py          # OAuth Authorization Code + PKCE and DPAPI storage
@@ -46,6 +48,8 @@ voice2text/
     ├── test_gesture.py
     ├── test_transcriber.py   # transcribe a fixture wav, assert text
     ├── test_recorder.py
+    ├── test_recording_pill.py
+    ├── test_recording_test.py
     ├── test_trigger_settings.py
     ├── test_glean_client.py
     └── fixtures/hello.wav    # short known-content recording
@@ -68,7 +72,7 @@ Threading model:
 - **Audio callback thread**: appends mono `float32` frames to a lock-protected chunk list only while recording.
 - **Transcription worker**: consumes ordered start/stop events, finalizes audio, runs local Whisper, and routes the text to paste or Glean.
 - **Glean worker**: performs OAuth refresh and streams Chat API responses without blocking input or transcription.
-- **UI thread**: owns the recording/thinking/answer overlay. Cross-thread updates use a queue.
+- **UI thread**: owns the compact recording pill or the thinking/answer overlay. Cross-thread updates use immutable queue commands. The pill receives only a normalized volume scalar, never audio samples.
 
 ## Trigger interaction
 
@@ -132,7 +136,14 @@ These Windows details are security and latency requirements. Do not substitute b
 - Open and configure the stream object once, but activate it only during recording so Windows does not show the microphone as continuously in use. Measure key-down-to-first-frame latency and clipping on GM hardware.
 - Capture at the default WASAPI device's native shared-mode rate. Convert to Whisper's 16kHz contract locally with the pinned `soxr` dependency using its high-quality mode; test output length, dtype, and signal integrity. Never silently pass non-16kHz audio to Whisper.
 - Buffer as a list of numpy chunks appended in the callback; concatenate on stop.
+- Compute only the latest normalized RMS meter scalar in the callback. Keep it in the recorder under the same lock, expose no waveform samples to UI code, and reset it on stop, cancel, or close.
 - Keep audio in memory only. Zero/drop references after transcription and never write temporary WAV files outside explicit manual-test commands.
+
+### Recording pill (recording_pill.py)
+- Show a compact bottom-center always-on-top pill whenever local or Ask Glean capture is active. Local recording uses green; Ask Glean uses orange. The selected trigger name must appear in the release/stop instruction.
+- Animate a short bar meter from the recorder's latest normalized `0..1` scalar. Do not keep level history, transfer audio buffers, draw a waveform, or infer/persist speech content.
+- Tk owns all widgets and cleanup on its dedicated UI thread. Other threads may send only immutable commands through a queue.
+- The bounded `--test-recording-pill` route exercises Raw Input, gesture deadlines, WASAPI, the scalar meter, cancellation, and cleanup without transcription, paste, Glean, or disk persistence. Completed test audio must be zeroed immediately.
 
 ### Pasting (paster.py)
 - Write UTF-16 text through the Win32 clipboard APIs using `CF_UNICODETEXT`, then synthesize Ctrl+V with `SendInput`.
@@ -171,6 +182,7 @@ uv sync
 uv run voice2text --configure-trigger
 uv run voice2text --configure-trigger right-alt
 uv run voice2text --list-triggers
+uv run voice2text --test-recording-pill --test-seconds 60
 uv run voice2text
 uv run pytest
 uv run ruff check .
@@ -185,11 +197,11 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 
 ## Testing
 
-- CI-safe tests: gesture timing, event routing, recorder buffer logic, transcript filtering, OAuth PKCE utilities, Glean response parsing with mocked HTTP, config validation, and model checksum validation.
+- CI-safe tests: gesture timing, event routing, recorder buffer and meter logic, recording-pill reduction, test-route cancellation and zeroing, transcript filtering, OAuth PKCE utilities, Glean response parsing with mocked HTTP, config validation, and model checksum validation.
 - Gesture tests: hold/release emits local dictation; one tap expires silently; two taps emit exactly one `GLEAN_START`; a standalone third press emits exactly one `GLEAN_STOP`; an in-grace chord does not stop Glean; and an accidental first tap followed by a hold emits local dictation.
 - Test exact threshold boundaries, standalone grace, pre-activation chords, late-chord cancellation, duplicate make/break events, auto-repeat, timeout cancellation, and maximum Glean duration.
 - Windows integration tests: Raw Input emits only configured-trigger transitions plus identity-free chord markers; clipboard text is restored; injected paste has balanced key-down/key-up events; DPAPI round-trips only for the current user.
-- Manual tests: each reviewed trigger on representative GM keyboards, Right Alt/AltGr native behavior, microphone privacy denial, default-device change, first-word clipping, Teams/Outlook/browser/Office paste behavior, lock/unlock, sleep/resume, remote desktop, and EDR behavior.
+- Manual tests: each reviewed trigger on representative GM keyboards, Right Alt/AltGr native behavior, pill placement/scaling/volume response, microphone privacy denial, default-device change, first-word clipping, Teams/Outlook/browser/Office paste behavior, lock/unlock, sleep/resume, remote desktop, and EDR behavior.
 - Live Glean tests require the registered test client and a non-production test plan. Verify permission trimming with two users who have intentionally different document access.
 - Do not claim end-to-end success for any untested hardware, endpoint policy, or live tenant operation.
 
@@ -209,7 +221,7 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 4. **Recorder — prototype validated** — WASAPI capture is active only during recording; native 48 kHz capture and local 16 kHz conversion passed on this machine. Representative-device latency and clipping tests remain required.
 5. **Transcriber — prototype validated** — resident/warmed CPU model, short-input rejection, checksum enforcement, and known-content benchmark passed. Representative GM laptop/model selection remains required.
 6. **Paster — prototype validated** — Win32 clipboard, balanced Ctrl+V, and plain-text restoration passed in a disposable focused control. GM-standard application and EDR validation remains required.
-7. **Mock Glean UX — complete** — network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible overlay lifecycle passed.
+7. **Mock Glean UX — complete** — compact recording pill, scalar meter, network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible answer-overlay lifecycle pass. Pill appearance and meter response still require representative hardware/UI tuning.
 8. **Glean authentication/API — isolated primitives complete; live validation blocked** — public-client PKCE, current-user DPAPI token storage, mocked Chat streaming, citation parsing, bounded responses, and sanitized error mapping pass. Admin registration and two-user permission tests remain required before runtime wiring.
 9. **Integration** — queues, lifecycle, tray behavior, device changes, lock/unlock, startup checks, and full end-to-end test.
 10. **Enterprise packaging** — x64 one-folder executable, signed binaries and installer, managed model payload, SBOM, vulnerability/license scan, and Intune/SCCM pilot.
