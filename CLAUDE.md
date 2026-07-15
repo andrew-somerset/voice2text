@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 are implemented on `gm_dev`: project skeleton, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Raw Input, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. Isolated Milestone 8 primitives now cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 84 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. Isolated Milestone 8 primitives now cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 100 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The OAuth and Chat components are not wired into `main.py`. Do not describe the current build as end-to-end complete or GM-deployment-ready.
 
@@ -32,7 +32,9 @@ voice2text/
 │   ├── __init__.py
 │   ├── main.py          # entry point, wires components, owns threads
 │   ├── gesture.py       # pure trigger state machine; no Win32 imports
-│   ├── hotkey.py        # Windows Raw Input adapter for trigger down/up
+│   ├── hotkey.py        # Windows Raw Input adapter for trigger/chord signals
+│   ├── trigger_settings.py # reviewed choices and atomic per-user persistence
+│   ├── trigger_setup.py # installer/first-run trigger picker
 │   ├── recorder.py      # WASAPI/sounddevice capture into a buffer
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
@@ -44,6 +46,7 @@ voice2text/
     ├── test_gesture.py
     ├── test_transcriber.py   # transcribe a fixture wav, assert text
     ├── test_recorder.py
+    ├── test_trigger_settings.py
     ├── test_glean_client.py
     └── fixtures/hello.wav    # short known-content recording
 ```
@@ -69,29 +72,37 @@ Threading model:
 
 ## Trigger interaction
 
-Windows laptop Fn keys are commonly handled by keyboard firmware or OEM utilities and often never appear as a normal Windows key event. **Do not make Fn a requirement.** Use a configurable trigger represented by a scan code plus extended-key flag. Start the prototype with **Right Ctrl**, which is a standard distinguishable key and has no standalone action. A managed deployment can change the trigger after testing GM laptop models.
+Windows laptop Fn keys are commonly handled by keyboard firmware or OEM utilities and often never appear as a normal Windows key event. **Do not make Fn a requirement or advertise it as universally selectable.** The installer/first-run picker offers reviewed Raw Input identities for **Right Alt**, **Right Ctrl**, **Right Shift**, **F8**, and **F9**. The non-secret choice is stored under `%LOCALAPPDATA%\voice2text\settings.json`; managed configuration can override it. Right Ctrl remains the safest fallback because it usually has no standalone action, not a hardware requirement.
+
+Trigger use is standalone-only by default. Wait `CHORD_GRACE_SECONDS = 0.08` after trigger-down before activating local capture. If any other key is pressed during that window, suppress the trigger without starting the microphone. If an unrelated make event arrives after capture starts, cancel provisional audio and consume the trigger release without transcription or paste. This permits Right Alt/AltGr and other normal combinations while retaining no unrelated key identity. The listener is deliberately passive, so Windows and applications may still perform their native Alt, Shift, function-key, or other shortcut behavior.
 
 - **Local dictation**: hold the trigger, speak, release. Transcribe locally and paste into the focused application.
 - **Start Ask Glean**: tap and release the trigger twice within `DOUBLE_TAP_WINDOW_SECONDS`. Start recording only after the second release, after clearing all provisional tap audio. Show an unmistakable "Ask Glean — recording" indicator and play a distinct start sound.
-- **Stop Ask Glean**: press the trigger a third time. Stop immediately on key-down, ignore its matching key-up, transcribe locally, then submit the final text. Change the indicator to "Thinking".
+- **Stop Ask Glean**: press the trigger a third time. Confirm a standalone stop on release or after the 80 ms grace deadline. A chord during the grace window resumes Glean recording instead of submitting. After confirmation, transcribe locally, submit the final text, and change the indicator to "Thinking".
 - A single short tap expires silently and never transcribes or pastes.
 - At `GLEAN_MAX_RECORDING_SECONDS`, stop and require explicit confirmation rather than submitting unexpectedly.
 
-Use configurable starting values of `TAP_MAX_SECONDS = 0.25`, `DOUBLE_TAP_WINDOW_SECONDS = 0.35`, and `GLEAN_MAX_RECORDING_SECONDS = 120.0`. Measure with `time.monotonic_ns()` and tune on representative GM hardware.
+Use configurable starting values of `CHORD_GRACE_SECONDS = 0.08`, `TAP_MAX_SECONDS = 0.25`, `DOUBLE_TAP_WINDOW_SECONDS = 0.35`, and `GLEAN_MAX_RECORDING_SECONDS = 120.0`. Measure with `time.monotonic_ns()` and tune on representative GM hardware.
 
 | State | Input | Action | Next state |
 |---|---|---|---|
-| `IDLE` | Trigger down | Start provisional local recording | `FIRST_PRESS` |
+| `IDLE` | Trigger down | Start standalone-key grace deadline | `FIRST_PRESS` |
+| `FIRST_PRESS` | Grace deadline | Start provisional local recording | `FIRST_PRESS` |
+| `FIRST_PRESS` | Chord before grace | Do not activate capture | `CHORD_SUPPRESSED` |
+| `FIRST_PRESS` | Chord after grace | Cancel provisional capture | `CHORD_SUPPRESSED` |
+| `CHORD_SUPPRESSED` | Trigger up | Consume release | `IDLE` |
 | `FIRST_PRESS` | Trigger up after a hold | Stop and queue local transcription | `IDLE` |
-| `FIRST_PRESS` | Trigger up after a short tap | Discard audio and start double-tap deadline | `WAITING_SECOND_TAP` |
+| `FIRST_PRESS` | Trigger up after a short tap | Discard any provisional audio and start double-tap deadline | `WAITING_SECOND_TAP` |
 | `WAITING_SECOND_TAP` | Deadline expires | Do nothing | `IDLE` |
-| `WAITING_SECOND_TAP` | Trigger down before deadline | Start a new provisional buffer | `SECOND_PRESS` |
+| `WAITING_SECOND_TAP` | Trigger down before deadline | Start a new standalone-key grace deadline | `SECOND_PRESS` |
 | `SECOND_PRESS` | Trigger up after a short tap | Discard tap audio and start a fresh Glean recording | `GLEAN_RECORDING` |
 | `SECOND_PRESS` | Trigger up after a hold | Treat as local dictation after an accidental first tap | `IDLE` |
-| `GLEAN_RECORDING` | Trigger down | Stop and queue transcription plus Glean submission | `GLEAN_STOP_PRESS` |
-| `GLEAN_STOP_PRESS` | Trigger up | Consume release without restarting | `IDLE` |
+| `GLEAN_RECORDING` | Trigger down | Start standalone stop grace | `GLEAN_STOP_PRESS` |
+| `GLEAN_STOP_PRESS` | Chord before grace | Suppress stop; resume after release | `GLEAN_CHORD_SUPPRESSED` |
+| `GLEAN_STOP_PRESS` | Grace deadline or trigger up | Stop and queue transcription plus submission | `IDLE` or `GLEAN_STOP_PRESS` until release |
+| `GLEAN_CHORD_SUPPRESSED` | Trigger up | Resume active Glean recording | `GLEAN_RECORDING` |
 
-The gesture state machine is pure Python and accepts timestamped `DOWN`, `UP`, and `TIMER` inputs. Platform code translates Windows input into those events. This separation makes every timing boundary testable without a keyboard.
+The gesture state machine is pure Python and accepts timestamped `DOWN`, `UP`, identity-free `CHORD`, and `TIMER` inputs. Platform code translates Windows input into those events. This separation makes every timing boundary testable without a keyboard.
 
 ## Critical implementation details
 
@@ -100,11 +111,12 @@ These Windows details are security and latency requirements. Do not substitute b
 ### Windows trigger input (hotkey.py)
 - Prefer Win32 **Raw Input** through a hidden message-only window registered with `RIDEV_INPUTSINK`. Microsoft recommends Raw Input over a low-level keyboard hook for most monitoring cases.
 - Do not use `WH_KEYBOARD_LL`, `pynput`, or the `keyboard` package in the baseline. A global hook sees every keystroke, resembles keylogger behavior to security tools, participates in a shared hook chain, and can be silently removed when its callback is slow.
-- Raw Input also receives keyboard events broadly. Inspect only enough `RAWKEYBOARD` data to match the configured scan code and `RI_KEY_E0`/`RI_KEY_E1` flag. Immediately discard every non-trigger event. Never convert other keys to text, store them, count them, or log them.
+- Raw Input also receives keyboard events broadly. Inspect only enough `RAWKEYBOARD` data to match the configured scan code and `RI_KEY_E0`/`RI_KEY_E1` flag. Outside a held trigger, immediately discard every non-trigger event. While chord suppression is enabled and the trigger is physically down, convert only the first unrelated make event into an identity-free `CHORD` marker. Never retain its make code, virtual key, text, device, timing history, or count, and never log it.
 - Do not use `RIDEV_NOLEGACY`; the app is listen-only and must not suppress input to other applications.
 - De-duplicate key auto-repeat and repeated make/break messages. Emit one transition only when the trigger state actually changes.
 - If security review rejects background Raw Input, provide a lower-capability fallback based on `RegisterHotKey`; do not quietly replace it with a global hook.
 - Treat OEM Fn support as optional future hardware validation. If a particular GM laptop emits Fn as raw HID, add an allowlisted device-specific mapping rather than making it universal behavior.
+- The setup picker must not offer arbitrary broad key capture. Add choices only as reviewed scan-code and extended-flag pairs; this keeps installation from resembling a keystroke collector.
 
 ### Transcription (transcriber.py)
 - Load the model **once at startup** and keep it resident. Per-utterance model loading costs 1–2s and destroys the latency budget.
@@ -156,6 +168,9 @@ These Windows details are security and latency requirements. Do not substitute b
 
 ```powershell
 uv sync
+uv run voice2text --configure-trigger
+uv run voice2text --configure-trigger right-alt
+uv run voice2text --list-triggers
 uv run voice2text
 uv run pytest
 uv run ruff check .
@@ -171,10 +186,10 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 ## Testing
 
 - CI-safe tests: gesture timing, event routing, recorder buffer logic, transcript filtering, OAuth PKCE utilities, Glean response parsing with mocked HTTP, config validation, and model checksum validation.
-- Gesture tests: hold/release emits local dictation; one tap expires silently; two taps emit exactly one `GLEAN_START`; third trigger down emits exactly one `GLEAN_STOP`; its release is consumed; and an accidental first tap followed by a hold emits local dictation.
-- Test exact threshold boundaries, duplicate make/break events, auto-repeat, unrelated keys, timeout cancellation, and maximum Glean duration.
-- Windows integration tests: Raw Input emits only configured-trigger transitions; clipboard text is restored; injected paste has balanced key-down/key-up events; DPAPI round-trips only for the current user.
-- Manual tests: microphone privacy denial, default-device change, first-word clipping, Teams/Outlook/browser/Office paste behavior, lock/unlock, sleep/resume, remote desktop, and EDR behavior.
+- Gesture tests: hold/release emits local dictation; one tap expires silently; two taps emit exactly one `GLEAN_START`; a standalone third press emits exactly one `GLEAN_STOP`; an in-grace chord does not stop Glean; and an accidental first tap followed by a hold emits local dictation.
+- Test exact threshold boundaries, standalone grace, pre-activation chords, late-chord cancellation, duplicate make/break events, auto-repeat, timeout cancellation, and maximum Glean duration.
+- Windows integration tests: Raw Input emits only configured-trigger transitions plus identity-free chord markers; clipboard text is restored; injected paste has balanced key-down/key-up events; DPAPI round-trips only for the current user.
+- Manual tests: each reviewed trigger on representative GM keyboards, Right Alt/AltGr native behavior, microphone privacy denial, default-device change, first-word clipping, Teams/Outlook/browser/Office paste behavior, lock/unlock, sleep/resume, remote desktop, and EDR behavior.
 - Live Glean tests require the registered test client and a non-production test plan. Verify permission trimming with two users who have intentionally different document access.
 - Do not claim end-to-end success for any untested hardware, endpoint policy, or live tenant operation.
 
@@ -188,9 +203,9 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 
 ## Milestones (build in this order)
 
-1. **Skeleton — complete** — package layout, configuration, protocols, ruff, pytest, and Windows-focused README.
-2. **Gesture — complete** — pure state machine and exhaustive timing tests.
-3. **Windows input — prototype validated** — Raw Input adapter reports only Right Ctrl transitions; registration and cleanup passed on this machine. GM security review remains required.
+1. **Skeleton — complete** — package layout, configuration, atomic per-user trigger settings, first-run picker, protocols, ruff, pytest, and Windows-focused README.
+2. **Gesture — complete** — pure state machine with standalone grace, chord suppression, and exhaustive timing tests.
+3. **Windows input — original prototype validated; new choices require hardware checks** — Raw Input registration and Right Ctrl cleanup passed on this machine. Right Alt and other reviewed choices plus chord markers are unit-tested; representative GM keyboard, AltGr, native shortcut, and security review remain required.
 4. **Recorder — prototype validated** — WASAPI capture is active only during recording; native 48 kHz capture and local 16 kHz conversion passed on this machine. Representative-device latency and clipping tests remain required.
 5. **Transcriber — prototype validated** — resident/warmed CPU model, short-input rejection, checksum enforcement, and known-content benchmark passed. Representative GM laptop/model selection remains required.
 6. **Paster — prototype validated** — Win32 clipboard, balanced Ctrl+V, and plain-text restoration passed in a disposable focused control. GM-standard application and EDR validation remains required.
