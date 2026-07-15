@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from voice2text.trigger_settings import (
+    TriggerSettingsError,
+    describe_trigger,
+    load_trigger_settings,
+    trigger_choice,
+)
+
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -34,6 +41,9 @@ class TriggerConfig:
 
     scan_code: int = 0x1D
     extended: bool = True
+    display_name: str = ""
+    suppress_chords: bool = True
+    chord_grace_seconds: float = 0.08
     tap_max_seconds: float = 0.25
     double_tap_window_seconds: float = 0.35
     glean_max_recording_seconds: float = 120.0
@@ -41,8 +51,26 @@ class TriggerConfig:
     def __post_init__(self) -> None:
         if not 0 <= self.scan_code <= 0xFFFF:
             raise ConfigError("trigger scan_code must fit in an unsigned 16-bit value")
+        if not isinstance(self.extended, bool):
+            raise ConfigError("trigger extended flag must be boolean")
+        if not self.display_name:
+            object.__setattr__(
+                self,
+                "display_name",
+                describe_trigger(self.scan_code, self.extended),
+            )
+        if len(self.display_name) > 64 or any(
+            ord(character) < 0x20 for character in self.display_name
+        ):
+            raise ConfigError("trigger display_name is invalid")
+        if not isinstance(self.suppress_chords, bool):
+            raise ConfigError("trigger suppress_chords flag must be boolean")
+        if not 0.02 <= self.chord_grace_seconds <= 0.15:
+            raise ConfigError("chord_grace_seconds must be between 0.02 and 0.15")
         if not 0.05 <= self.tap_max_seconds <= 1.0:
             raise ConfigError("tap_max_seconds must be between 0.05 and 1.0")
+        if self.chord_grace_seconds >= self.tap_max_seconds:
+            raise ConfigError("chord_grace_seconds must be shorter than tap_max_seconds")
         if not self.tap_max_seconds <= self.double_tap_window_seconds <= 1.5:
             raise ConfigError(
                 "double_tap_window_seconds must be at least tap_max_seconds and at most 1.5"
@@ -137,7 +165,7 @@ class AppConfig:
     verbose: bool = False
 
     @classmethod
-    def from_environment(cls) -> AppConfig:
+    def from_environment(cls, *, trigger_settings_path: Path | None = None) -> AppConfig:
         """Build configuration from non-secret environment values."""
 
         mode = os.getenv("VOICE2TEXT_GLEAN_MODE", "mock").strip().lower()
@@ -146,16 +174,55 @@ class AppConfig:
             for scope in os.getenv("VOICE2TEXT_GLEAN_SCOPES", "CHAT").split(",")
             if scope.strip()
         )
+        try:
+            saved_trigger = load_trigger_settings(trigger_settings_path)
+            selected_choice = trigger_choice(
+                os.getenv(
+                    "VOICE2TEXT_TRIGGER_CHOICE",
+                    saved_trigger.choice_id if saved_trigger is not None else "right-ctrl",
+                ).strip()
+            )
+        except TriggerSettingsError as exc:
+            raise ConfigError(str(exc)) from None
+
+        trigger_scan_code_value = os.getenv("VOICE2TEXT_TRIGGER_SCAN_CODE")
         trigger_extended_value = os.getenv("VOICE2TEXT_TRIGGER_EXTENDED")
+        trigger_suppress_chords_value = os.getenv("VOICE2TEXT_TRIGGER_SUPPRESS_CHORDS")
         verbose_value = os.getenv("VOICE2TEXT_VERBOSE")
+        trigger_scan_code = (
+            selected_choice.scan_code
+            if trigger_scan_code_value is None
+            else int(trigger_scan_code_value, 0)
+        )
+        trigger_extended = (
+            selected_choice.extended
+            if trigger_extended_value is None
+            else _parse_bool(trigger_extended_value, name="VOICE2TEXT_TRIGGER_EXTENDED")
+        )
+        trigger_identity_overridden = (
+            trigger_scan_code_value is not None or trigger_extended_value is not None
+        )
+        trigger_suppress_chords = (
+            saved_trigger.suppress_chords if saved_trigger is not None else True
+        )
+        if trigger_suppress_chords_value is not None:
+            trigger_suppress_chords = _parse_bool(
+                trigger_suppress_chords_value,
+                name="VOICE2TEXT_TRIGGER_SUPPRESS_CHORDS",
+            )
 
         return cls(
             trigger=TriggerConfig(
-                scan_code=int(os.getenv("VOICE2TEXT_TRIGGER_SCAN_CODE", "0x1d"), 0),
-                extended=(
-                    True
-                    if trigger_extended_value is None
-                    else _parse_bool(trigger_extended_value, name="VOICE2TEXT_TRIGGER_EXTENDED")
+                scan_code=trigger_scan_code,
+                extended=trigger_extended,
+                display_name=(
+                    describe_trigger(trigger_scan_code, trigger_extended)
+                    if trigger_identity_overridden
+                    else selected_choice.display_name
+                ),
+                suppress_chords=trigger_suppress_chords,
+                chord_grace_seconds=float(
+                    os.getenv("VOICE2TEXT_TRIGGER_CHORD_GRACE_SECONDS", "0.08")
                 ),
                 tap_max_seconds=float(os.getenv("VOICE2TEXT_TAP_MAX_SECONDS", "0.25")),
                 double_tap_window_seconds=float(
