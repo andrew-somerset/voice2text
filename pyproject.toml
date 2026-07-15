@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voice2text"
+version = "0.1.0"
+description = "Windows-first local dictation with a secure Ask Glean route"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = { text = "MIT" }
+authors = [{ name = "Andrew Somerset" }]
+dependencies = [
+    "httpx>=0.28.1,<0.29",
+    "numpy>=2.0,<3",
+    "pywhispercpp>=1.5,<2",
+    "sounddevice>=0.5.2,<0.6",
+    "soxr>=1.1,<2",
+]
+
+[project.scripts]
+voice2text = "voice2text.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+    "pytest-cov>=6.2,<7",
+    "ruff>=0.12,<0.13",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice2text"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
