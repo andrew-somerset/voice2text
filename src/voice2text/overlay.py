@@ -82,13 +82,13 @@ class OverlayModel:
             self._state = OverlayState(
                 status=OverlayStatus.LOCAL_RECORDING,
                 title="Local dictation",
-                message="Listening — release Right Ctrl to transcribe locally",
+                message="Listening — release the selected trigger to transcribe locally",
             )
         elif command.kind is OverlayCommandKind.SHOW_GLEAN_RECORDING:
             self._state = OverlayState(
                 status=OverlayStatus.GLEAN_RECORDING,
                 title="Ask Glean — recording",
-                message="Press Right Ctrl once to stop",
+                message="Press the selected trigger once to stop",
             )
         elif command.kind is OverlayCommandKind.SHOW_THINKING:
             self._state = OverlayState(

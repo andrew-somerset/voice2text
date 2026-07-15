@@ -36,6 +36,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CHOICE",
         help="open the trigger picker, or save a preset such as right-alt",
     )
+    setup_actions.add_argument(
+        "--test-recording-pill",
+        action="store_true",
+        help="test the selected trigger, microphone, and volume pill without transcription",
+    )
+    parser.add_argument(
+        "--test-seconds",
+        type=float,
+        default=45.0,
+        help="bounded duration for --test-recording-pill (default: 45)",
+    )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser
 
@@ -91,6 +102,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_config:
         print("voice2text configuration is valid")
+        return 0
+
+    if args.test_recording_pill:
+        from voice2text.recording_test import RecordingPillTestError, run_recording_pill_test
+
+        try:
+            run_recording_pill_test(config, duration_seconds=args.test_seconds)
+        except (RecordingPillTestError, ValueError) as exc:
+            logging.error("Recording pill test failed: %s", exc)
+            return 1
         return 0
 
     print(
