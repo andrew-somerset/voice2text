@@ -53,6 +53,43 @@ Threading model (important — get this right):
 - **Audio**: sounddevice's own callback thread appends frames to a thread-safe buffer.
 - **Worker thread**: waits on key-up signal, runs transcription, then pastes. One `queue.Queue` between hotkey and worker is enough. No asyncio — it buys nothing here.
 
+## GM Ask Glean interaction (`gm_dev`)
+
+Keep ordinary dictation push-to-talk, but make Ask Glean a latched recording mode:
+
+- **Local dictation**: hold Fn, speak, release Fn. Transcribe locally and paste into the focused app.
+- **Start Ask Glean**: tap and release Fn twice within `FN_DOUBLE_TAP_WINDOW_SECONDS`. Recording starts only after the second release, after the app clears all provisional tap audio. Play a distinct start sound and show a visible "Ask Glean — recording" indicator.
+- **Stop Ask Glean**: press Fn a third time. Stop recording immediately on that key-down, ignore the matching key-up, transcribe locally, and submit only the final text to Glean. Play a stop sound and change the indicator to "Thinking".
+- A single short tap expires silently and never transcribes or pastes anything.
+- Enforce `GLEAN_MAX_RECORDING_SECONDS`; if it expires, stop and ask the user whether to submit rather than sending unexpectedly.
+
+Use configurable starting values of `FN_TAP_MAX_SECONDS = 0.25`, `FN_DOUBLE_TAP_WINDOW_SECONDS = 0.35`, and `GLEAN_MAX_RECORDING_SECONDS = 120.0`. Measure intervals with `time.monotonic_ns()`, not wall-clock time, and tune the tap values through real-Mac testing.
+
+The hotkey state machine must distinguish the gestures without delaying normal dictation:
+
+| State | Input | Action | Next state |
+|---|---|---|---|
+| `IDLE` | Fn down | Start a provisional local buffer | `FIRST_PRESS` |
+| `FIRST_PRESS` | Fn up after a hold | Stop and queue local transcription | `IDLE` |
+| `FIRST_PRESS` | Fn up after a short tap | Discard provisional audio and start the double-tap deadline | `WAITING_SECOND_TAP` |
+| `WAITING_SECOND_TAP` | Deadline expires | Do nothing | `IDLE` |
+| `WAITING_SECOND_TAP` | Fn down before deadline | Start a new provisional buffer | `SECOND_PRESS` |
+| `SECOND_PRESS` | Fn up after a short tap | Discard/clear provisional audio, start a fresh Glean buffer, and signal the start UI | `GLEAN_RECORDING` |
+| `SECOND_PRESS` | Fn up after a hold | Treat it as ordinary local dictation, which recovers naturally from an accidental first tap | `IDLE` |
+| `GLEAN_RECORDING` | Fn down | Stop and queue local transcription plus Glean submission | `GLEAN_STOP_PRESS` |
+| `GLEAN_STOP_PRESS` | Fn up | Consume the release without starting another recording | `IDLE` |
+
+The event-tap callback may update this state and enqueue small immutable events such as `LOCAL_START`, `LOCAL_STOP`, `GLEAN_START`, and `GLEAN_STOP`; it must not clear audio, call Whisper, make a network request, play sounds, or update UI directly. Queue consumers perform those actions in event order.
+
+Ask Glean data flow:
+
+```
+Fn double tap ──▶ local recorder ──▶ third Fn press ──▶ local transcription
+              ──▶ final text over TLS to Glean ──▶ streamed answer + citations
+```
+
+Raw microphone audio never leaves the Mac. The final query text does leave the device and is governed by GM/Glean retention and audit policy. Never log audio, transcripts, answers, citations, or OAuth tokens.
+
 ## Critical implementation details
 
 These are hard-won macOS specifics. Do not deviate without testing on real hardware.
@@ -62,6 +99,7 @@ These are hard-won macOS specifics. Do not deviate without testing on real hardw
 - Use `CGEventTapCreate` at the session level (`kCGSessionEventTap`) as a **listen-only** tap (`kCGEventTapOptionListenOnly`) — we never swallow the event.
 - `pynput` does NOT reliably capture Fn on macOS. Use Quartz directly via pyobjc.
 - Guard against other modifiers: Fn+arrow (page up/down etc.) also fires flagsChanged. Only trigger when Fn is the change and debounce transitions (track previous flag state).
+- Implement the `gm_dev` tap/hold behavior as an explicit, unit-tested state machine. Do not use `sleep()` in the event callback; compare monotonic timestamps and handle expired deadlines from the run loop or a lightweight timer event.
 
 ### Transcription (transcriber.py)
 - Load the model **once at startup** and keep it resident. Per-utterance model loading costs 1–2s and destroys the latency budget.
@@ -101,6 +139,8 @@ Every module in `src/voice2text/` should have an `if __name__ == "__main__":` bl
 ## Testing
 
 - CI-safe tests: transcriber against fixture wavs (skip if model not downloaded), buffer logic in recorder, config sanity. Mock Quartz/AppKit — never import-fail on Linux CI.
+- Unit-test the hotkey state machine without Quartz: hold/release emits local dictation; one tap times out silently; two taps emit exactly one `GLEAN_START`; the third Fn down emits exactly one `GLEAN_STOP`; its release is consumed; and an accidental first tap followed by a hold still emits local dictation.
+- Test boundary timestamps exactly at and immediately around both tap thresholds, duplicate `flagsChanged` events, unrelated modifier changes, timeout cancellation, and the maximum Glean recording duration.
 - Everything touching real input devices or event taps is manual-test only via the `__main__` blocks above. Document manual test steps in the PR description.
 - **Claude Code cannot fully verify this app end-to-end** (no mic, no Fn key, no GUI in the sandbox). After changes to hotkey.py or paster.py, say explicitly what needs manual verification instead of claiming it works.
 
