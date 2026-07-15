@@ -208,6 +208,8 @@ def main() -> None:
     )
 
     # Refuse to start a second instance — two would both paste every utterance.
+    # Exit 0 (not an error) so a launchd KeepAlive agent treats "already
+    # running" as success and does not restart-loop when a manual instance is up.
     lock = _acquire_single_instance_lock()
     if lock is None:
         print(
@@ -215,7 +217,7 @@ def main() -> None:
             "Quit that one first (Ctrl+C in its terminal), or run:  pkill -f voice2text",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(0)
 
     _print_banner(args.model)
 
