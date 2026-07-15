@@ -56,11 +56,19 @@ class Recorder:
         self._chunks: list[FloatAudio] = []
         self._lock = threading.Lock()
         self._recording = False
+        self._level = 0.0
 
     @property
     def is_recording(self) -> bool:
         with self._lock:
             return self._recording
+
+    @property
+    def level(self) -> float:
+        """Latest normalized meter level; no samples leave the recorder."""
+
+        with self._lock:
+            return self._level
 
     def open(self) -> None:
         """Open and configure the stream without activating microphone capture."""
@@ -76,6 +84,7 @@ class Recorder:
             if self._recording:
                 raise RecordingError("a recording is already active")
             self._chunks.clear()
+            self._level = 0.0
             self._recording = True
 
         try:
@@ -84,6 +93,7 @@ class Recorder:
             with self._lock:
                 self._recording = False
                 self._chunks.clear()
+                self._level = 0.0
             raise RecordingError(
                 "Could not start the microphone. Check Settings > Privacy & security > Microphone "
                 "and enable microphone access for desktop apps."
@@ -102,12 +112,14 @@ class Recorder:
             with self._lock:
                 self._recording = False
                 self._chunks.clear()
+                self._level = 0.0
             raise RecordingError("Could not stop the microphone stream cleanly") from exc
 
         with self._lock:
             self._recording = False
             chunks = self._chunks
             self._chunks = []
+            self._level = 0.0
 
         if not chunks:
             return np.empty(0, dtype=np.float32)
@@ -130,6 +142,7 @@ class Recorder:
         with self._lock:
             if not self._recording:
                 self._chunks.clear()
+                self._level = 0.0
                 return
         try:
             self._require_stream().stop()
@@ -137,6 +150,7 @@ class Recorder:
             with self._lock:
                 self._recording = False
                 self._chunks.clear()
+                self._level = 0.0
 
     def close(self) -> None:
         """Release PortAudio resources and drop any audio references."""
@@ -148,6 +162,7 @@ class Recorder:
             stream.close()
         with self._lock:
             self._chunks.clear()
+            self._level = 0.0
 
     def __enter__(self) -> Recorder:
         self.open()
@@ -171,7 +186,9 @@ class Recorder:
             if input_data.ndim != 2 or input_data.shape[1] != self._config.channels:
                 LOGGER.error("Microphone callback returned an unexpected channel layout")
                 return
-            self._chunks.append(np.asarray(input_data[:, 0], dtype=np.float32).copy())
+            chunk = np.asarray(input_data[:, 0], dtype=np.float32).copy()
+            self._chunks.append(chunk)
+            self._level = max(_meter_level(chunk), self._level * 0.72)
 
     def _create_wasapi_stream(self, callback: AudioCallback) -> InputStream:
         try:
@@ -240,6 +257,18 @@ def _block_size(sample_rate: int, duration_ms: int) -> int:
     """Keep callback duration stable when WASAPI captures above 16 kHz."""
 
     return sample_rate * duration_ms // 1_000
+
+
+def _meter_level(audio: FloatAudio) -> float:
+    """Map mono float audio from -60 dBFS..0 dBFS into a visual 0..1 scalar."""
+
+    if audio.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+    if rms <= 1e-6:
+        return 0.0
+    decibels = 20.0 * np.log10(rms)
+    return float(np.clip((decibels + 60.0) / 60.0, 0.0, 1.0))
 
 
 def main(argv: list[str] | None = None) -> int:

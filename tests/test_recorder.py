@@ -6,7 +6,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from voice2text.recorder import Recorder, RecordingError, _block_size, _resample_audio
+from voice2text.recorder import (
+    Recorder,
+    RecordingError,
+    _block_size,
+    _meter_level,
+    _resample_audio,
+)
 
 
 class FakeStream:
@@ -60,7 +66,9 @@ def test_cancel_discards_audio_and_next_recording_is_fresh() -> None:
     recorder.start()
     assert factory.stream is not None
     factory.stream.emit([0.8])
+    assert recorder.level > 0
     recorder.cancel()
+    assert recorder.level == 0
     factory.stream.emit([0.9])
 
     recorder.start()
@@ -124,3 +132,32 @@ def test_native_windows_rate_is_resampled_to_whisper_rate() -> None:
 def test_native_windows_rate_keeps_requested_callback_duration() -> None:
     assert _block_size(48_000, 20) == 960
     assert _block_size(16_000, 20) == 320
+
+
+def test_meter_level_maps_silence_and_voice_to_normalized_scalar() -> None:
+    silence = np.zeros(320, dtype=np.float32)
+    quiet = np.full(320, 0.01, dtype=np.float32)
+    voice = np.full(320, 0.1, dtype=np.float32)
+    clipped = np.ones(320, dtype=np.float32)
+
+    assert _meter_level(silence) == 0.0
+    assert _meter_level(quiet) == pytest.approx(1 / 3, abs=0.01)
+    assert _meter_level(voice) == pytest.approx(2 / 3, abs=0.01)
+    assert _meter_level(clipped) == 1.0
+
+
+def test_recorder_exposes_smoothed_level_and_resets_after_stop() -> None:
+    factory = FakeFactory()
+    recorder = Recorder(stream_factory=factory)
+    recorder.start()
+    assert factory.stream is not None
+
+    factory.stream.emit([0.1] * 320)
+    loud_level = recorder.level
+    factory.stream.emit([0.0] * 320)
+
+    assert loud_level > 0.6
+    assert recorder.level == pytest.approx(loud_level * 0.72)
+    audio = recorder.stop()
+    assert recorder.level == 0.0
+    audio.fill(0)
