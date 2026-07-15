@@ -12,9 +12,10 @@ import time
 from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any, ClassVar
 
-from voice2text.config import TriggerConfig
+from voice2text.config import AppConfig, ConfigError, TriggerConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,10 +95,26 @@ class _RAWINPUT_KEYBOARD(ctypes.Structure):
 
 @dataclass(frozen=True, slots=True)
 class TriggerTransition:
-    """A de-duplicated transition for the configured trigger only."""
+    """A de-duplicated trigger transition or identity-free chord marker."""
 
-    is_down: bool
+    kind: TriggerTransitionKind
     timestamp_ns: int
+
+    @property
+    def is_down(self) -> bool:
+        """Whether this is the configured trigger's physical down transition."""
+
+        if self.kind is TriggerTransitionKind.CHORD:
+            raise ValueError("a CHORD marker has no trigger down/up state")
+        return self.kind is TriggerTransitionKind.DOWN
+
+
+class TriggerTransitionKind(Enum):
+    """Input signals allowed to leave the narrow Raw Input boundary."""
+
+    DOWN = auto()
+    UP = auto()
+    CHORD = auto()
 
 
 class TriggerFilter:
@@ -106,6 +123,7 @@ class TriggerFilter:
     def __init__(self, config: TriggerConfig | None = None) -> None:
         self._config = config or TriggerConfig()
         self._is_down = False
+        self._chorded = False
 
     @property
     def is_down(self) -> bool:
@@ -118,20 +136,35 @@ class TriggerFilter:
         flags: int,
         timestamp_ns: int,
     ) -> TriggerTransition | None:
-        """Return a transition only when the configured physical key changes state."""
+        """Return trigger transitions and one identity-free chord marker."""
 
         if timestamp_ns < 0:
             raise ValueError("timestamp_ns cannot be negative")
+        is_break = bool(flags & RI_KEY_BREAK)
         is_extended = bool(flags & (RI_KEY_E0 | RI_KEY_E1))
         if make_code != self._config.scan_code or is_extended != self._config.extended:
+            if (
+                self._config.suppress_chords
+                and self._is_down
+                and not is_break
+                and not self._chorded
+            ):
+                self._chorded = True
+                return TriggerTransition(TriggerTransitionKind.CHORD, timestamp_ns)
             return None
 
-        is_down = not bool(flags & RI_KEY_BREAK)
+        is_down = not is_break
         if is_down == self._is_down:
             return None
 
         self._is_down = is_down
-        return TriggerTransition(is_down=is_down, timestamp_ns=timestamp_ns)
+        if is_down:
+            self._chorded = False
+            kind = TriggerTransitionKind.DOWN
+        else:
+            self._chorded = False
+            kind = TriggerTransitionKind.UP
+        return TriggerTransition(kind, timestamp_ns)
 
 
 class WindowsTriggerListener:
@@ -416,16 +449,23 @@ class _Win32Bindings:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Manually verify that only Right Ctrl transitions are reported."""
+    """Manually verify the selected trigger and privacy-safe chord suppression."""
 
     parser = argparse.ArgumentParser(description="Test the Windows trigger listener")
     parser.add_argument("--seconds", type=float, default=10.0)
     args = parser.parse_args(argv)
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
+    try:
+        config = AppConfig.from_environment().trigger
+    except (ConfigError, ValueError) as exc:
+        parser.error(str(exc))
 
-    print("Listening for Right Ctrl only; unrelated keys are discarded.")
-    with WindowsTriggerListener(lambda transition: print("DOWN" if transition.is_down else "UP")):
+    print(
+        f"Listening for {config.display_name}; unrelated keys are discarded and only "
+        "CHORD suppression markers are reported."
+    )
+    with WindowsTriggerListener(lambda transition: print(transition.kind.name), config):
         time.sleep(args.seconds)
     return 0
 
