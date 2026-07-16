@@ -7,6 +7,7 @@ from voice2text.recording_pill import (
     RecordingPillCommandKind,
     RecordingPillModel,
     RecordingPillStatus,
+    _bar_targets,
 )
 
 
@@ -19,8 +20,8 @@ def test_ready_pill_confirms_listener_and_selected_trigger() -> None:
     )
 
     assert state.status is RecordingPillStatus.READY
-    assert state.title == "Voice trigger ready"
-    assert state.hint == "Hold Right Alt to test"
+    assert state.title == "Voice dictation ready"
+    assert state.hint == "Hold Right Alt to record"
 
 
 def test_local_pill_names_selected_trigger_and_accepts_level() -> None:
@@ -51,6 +52,57 @@ def test_glean_pill_uses_distinct_state_and_stop_instruction() -> None:
     assert state.status is RecordingPillStatus.GLEAN_RECORDING
     assert state.title == "Ask Glean recording"
     assert "Tap F9" in state.hint
+
+
+def test_local_transcription_and_paste_feedback_are_content_free() -> None:
+    model = RecordingPillModel()
+
+    transcribing = model.apply(RecordingPillCommand(RecordingPillCommandKind.SHOW_TRANSCRIBING))
+    pasted = model.apply(RecordingPillCommand(RecordingPillCommandKind.SHOW_PASTED))
+    no_speech = model.apply(RecordingPillCommand(RecordingPillCommandKind.SHOW_NO_SPEECH))
+
+    assert transcribing.status is RecordingPillStatus.TRANSCRIBING
+    assert transcribing.title == "Transcribing locally"
+    assert pasted.title == "Text inserted"
+    assert no_speech.title == "No speech detected"
+    assert no_speech.hint == "Nothing was pasted"
+
+
+def test_mac_style_bars_grow_with_voice_level() -> None:
+    quiet = _bar_targets(RecordingPillStatus.LOCAL_RECORDING, 0.05, phase=0.7)
+    speech = _bar_targets(RecordingPillStatus.LOCAL_RECORDING, 0.85, phase=0.7)
+
+    assert len(quiet) == 9
+    assert len(speech) == 9
+    assert sum(speech) > sum(quiet) * 2
+    assert all(0.05 <= height <= 1.0 for height in speech)
+
+
+def test_transcribing_bars_shimmer_without_microphone_level() -> None:
+    first = _bar_targets(RecordingPillStatus.TRANSCRIBING, 0.0, phase=0.0)
+    second = _bar_targets(RecordingPillStatus.TRANSCRIBING, 0.0, phase=1.0)
+
+    assert first != second
+    assert len(set(first)) > 1
+
+
+def test_paste_blocked_fallback_keeps_text_in_memory_and_clears_on_hide() -> None:
+    private_text = "private local transcript"
+    model = RecordingPillModel()
+
+    fallback = model.apply(
+        RecordingPillCommand(
+            RecordingPillCommandKind.SHOW_PASTE_BLOCKED,
+            message="Windows blocked focused text insertion",
+            content=private_text,
+        )
+    )
+
+    assert fallback.status is RecordingPillStatus.PASTE_BLOCKED
+    assert fallback.content == private_text
+    assert private_text not in repr(fallback)
+    hidden = model.apply(RecordingPillCommand(RecordingPillCommandKind.HIDE))
+    assert hidden.content == ""
 
 
 def test_level_is_ignored_outside_recording_states() -> None:
