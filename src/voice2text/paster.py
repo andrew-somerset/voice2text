@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, ClassVar, Protocol
 
@@ -21,9 +21,7 @@ KEYEVENTF_KEYUP = 0x0002
 VK_CONTROL = 0x11
 VK_V = 0x56
 WM_CANCELMODE = 0x001F
-WM_PASTE = 0x0302
 SMTO_ABORTIFHUNG = 0x0002
-_DIRECT_PASTE_CLASSES = ("edit", "richedit", "scintilla")
 _GUI_MENU_FLAGS = 0x0004 | 0x0008 | 0x0010
 
 
@@ -48,8 +46,6 @@ class FocusManager(Protocol):
 
     def activate(self, target: FocusTarget) -> None: ...
 
-    def paste_clipboard(self, target: FocusTarget) -> bool: ...
-
 
 @dataclass(frozen=True, slots=True)
 class KeyEvent:
@@ -65,6 +61,7 @@ class FocusTarget:
 
     foreground_window: int
     focused_control: int
+    uia_element: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.foreground_window <= 0 or self.focused_control <= 0:
@@ -75,7 +72,6 @@ class PasteMethod(Enum):
     """Content-free delivery path used for one paste attempt."""
 
     NONE = auto()
-    DIRECT_CONTROL = auto()
     SEND_INPUT = auto()
 
 
@@ -197,11 +193,8 @@ class WindowsPaster:
             self._sleep(self._clipboard_delay_seconds)
             method = PasteMethod.SEND_INPUT
             if target is not None and focus_manager is not None:
-                if focus_manager.paste_clipboard(target):
-                    method = PasteMethod.DIRECT_CONTROL
-                else:
-                    focus_manager.activate(target)
-                    self._send_paste()
+                focus_manager.activate(target)
+                self._send_paste()
             else:
                 self._send_paste()
         except Exception:
@@ -292,12 +285,6 @@ class WindowsFocusManager:
         self._user32.SetActiveWindow.restype = wintypes.HWND
         self._user32.SetFocus.argtypes = [wintypes.HWND]
         self._user32.SetFocus.restype = wintypes.HWND
-        self._user32.GetClassNameW.argtypes = [
-            wintypes.HWND,
-            wintypes.LPWSTR,
-            ctypes.c_int,
-        ]
-        self._user32.GetClassNameW.restype = ctypes.c_int
         self._user32.SendMessageTimeoutW.argtypes = [
             wintypes.HWND,
             wintypes.UINT,
@@ -332,14 +319,21 @@ class WindowsFocusManager:
         info = _GUITHREADINFO(cbSize=ctypes.sizeof(_GUITHREADINFO))
         if not self._user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)):
             return None
-        if int(info.flags) & _GUI_MENU_FLAGS or info.hwndMenuOwner:
+        if _is_menu_mode(info):
             return None
-        focused = info.hwndFocus
-        if not focused or not self._user32.IsWindow(focused):
+        target = _focus_target_from_gui_info(
+            int(window),
+            int(info.hwndFocus) if info.hwndFocus else 0,
+            is_window=lambda handle: bool(self._user32.IsWindow(handle)),
+            is_child=lambda parent, child: bool(self._user32.IsChild(parent, child)),
+        )
+        if target is None:
             return None
-        if focused != window and not self._user32.IsChild(window, focused):
-            return None
-        return FocusTarget(foreground_window=int(window), focused_control=int(focused))
+        return FocusTarget(
+            target.foreground_window,
+            target.focused_control,
+            uia_element=_capture_uia_focused_element(target.foreground_window),
+        )
 
     def validate(self, target: FocusTarget) -> bool:
         """Check that both opaque handles remain valid and related."""
@@ -364,16 +358,27 @@ class WindowsFocusManager:
         if not target_thread:
             raise PasteError("The original dictation target thread is unavailable")
 
-        result = ctypes.c_size_t()
-        self._user32.SendMessageTimeoutW(
-            window,
-            WM_CANCELMODE,
-            0,
-            0,
-            SMTO_ABORTIFHUNG,
-            250,
-            ctypes.byref(result),
+        current_info = _GUITHREADINFO(cbSize=ctypes.sizeof(_GUITHREADINFO))
+        has_current_info = self._user32.GetGUIThreadInfo(
+            target_thread,
+            ctypes.byref(current_info),
         )
+        if has_current_info and _is_menu_mode(current_info):
+            result = ctypes.c_size_t()
+            self._user32.SendMessageTimeoutW(
+                window,
+                WM_CANCELMODE,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                250,
+                ctypes.byref(result),
+            )
+        if target.uia_element is not None and _activate_uia_focus(target.uia_element):
+            return
+        current_foreground = self._user32.GetForegroundWindow()
+        if current_foreground and int(current_foreground) == window:
+            return
 
         message = wintypes.MSG()
         self._user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 0)
@@ -403,33 +408,65 @@ class WindowsFocusManager:
         ):
             raise PasteError("The original dictation target did not regain focus")
 
-    def paste_clipboard(self, target: FocusTarget) -> bool:
-        """Use WM_PASTE for standard edit controls; return False for custom UI toolkits."""
 
-        class_buffer = ctypes.create_unicode_buffer(256)
-        copied = int(
-            self._user32.GetClassNameW(
-                target.focused_control,
-                class_buffer,
-                len(class_buffer),
-            )
-        )
-        if copied <= 0:
-            return False
-        class_name = class_buffer.value.lower()
-        if not any(name in class_name for name in _DIRECT_PASTE_CLASSES):
-            return False
-        result = ctypes.c_size_t()
-        delivered = self._user32.SendMessageTimeoutW(
-            target.focused_control,
-            WM_PASTE,
-            0,
-            0,
-            SMTO_ABORTIFHUNG,
-            1_000,
-            ctypes.byref(result),
-        )
-        return bool(delivered)
+def _focus_target_from_gui_info(
+    foreground_window: int,
+    focused_control: int,
+    *,
+    is_window: Callable[[int], bool],
+    is_child: Callable[[int, int], bool],
+) -> FocusTarget | None:
+    """Build a current target, using the top-level HWND for custom UI frameworks."""
+
+    if foreground_window <= 0 or not is_window(foreground_window):
+        return None
+    if focused_control <= 0 or not is_window(focused_control):
+        return FocusTarget(foreground_window, foreground_window)
+    if focused_control != foreground_window and not is_child(
+        foreground_window,
+        focused_control,
+    ):
+        return FocusTarget(foreground_window, foreground_window)
+    return FocusTarget(foreground_window, focused_control)
+
+
+def _is_menu_mode(info: _GUITHREADINFO) -> bool:
+    """Return whether Windows reports an active menu/modal loop for this GUI thread."""
+
+    return bool(int(info.flags) & _GUI_MENU_FLAGS or info.hwndMenuOwner)
+
+
+def _capture_uia_focused_element(foreground_window: int) -> object | None:
+    """Capture only an opaque UIA focus wrapper belonging to the foreground window."""
+
+    try:
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        from pywinauto.uia_defines import IUIA
+        from pywinauto.uia_element_info import UIAElementInfo
+
+        element = UIAWrapper(UIAElementInfo(IUIA().iuia.GetFocusedElement()))
+        top_level = element.top_level_parent()
+        if int(top_level.handle or 0) != foreground_window:
+            return None
+        return element
+    except Exception:
+        return None
+
+
+def _activate_uia_focus(element: object) -> bool:
+    """Set focus through UIA in the worker's COM apartment without reading element content."""
+
+    try:
+        import comtypes
+
+        comtypes.CoInitialize()
+        try:
+            element.set_focus()  # type: ignore[attr-defined]
+        finally:
+            comtypes.CoUninitialize()
+        return True
+    except Exception:
+        return False
 
 
 class _KEYBDINPUT(ctypes.Structure):

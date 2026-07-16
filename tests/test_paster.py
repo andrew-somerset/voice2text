@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import sys
+import threading
 
 import pytest
 
@@ -12,6 +14,8 @@ from voice2text.paster import (
     PasteMethod,
     PasteOutcome,
     WindowsPaster,
+    _activate_uia_focus,
+    _focus_target_from_gui_info,
     paste_key_events,
 )
 
@@ -39,14 +43,11 @@ class FakeFocusManager:
         self,
         *,
         failure: Exception | None = None,
-        direct: bool = False,
         valid: bool = True,
     ) -> None:
         self.failure = failure
-        self.direct = direct
         self.valid = valid
         self.activations: list[FocusTarget] = []
-        self.direct_pastes: list[FocusTarget] = []
 
     def capture(self) -> FocusTarget | None:
         return FocusTarget(foreground_window=42, focused_control=43)
@@ -60,10 +61,6 @@ class FakeFocusManager:
         self.activations.append(target)
         if self.failure is not None:
             raise self.failure
-
-    def paste_clipboard(self, target: FocusTarget) -> bool:
-        self.direct_pastes.append(target)
-        return self.direct
 
 
 class FakeTimer:
@@ -85,6 +82,14 @@ class FakeTimer:
             self.callback(*self.args)  # type: ignore[operator]
 
 
+class FakeUiaElement:
+    def __init__(self) -> None:
+        self.focus_count = 0
+
+    def set_focus(self) -> None:
+        self.focus_count += 1
+
+
 def test_key_sequence_is_balanced_and_ordered() -> None:
     events = paste_key_events()
 
@@ -99,6 +104,72 @@ def test_key_sequence_is_balanced_and_ordered() -> None:
 def test_send_input_structure_matches_windows_abi() -> None:
     expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
     assert ctypes.sizeof(_INPUT) == expected_size
+
+
+def test_focus_target_uses_exact_valid_child_control() -> None:
+    target = _focus_target_from_gui_info(
+        10,
+        11,
+        is_window=lambda handle: handle in {10, 11},
+        is_child=lambda parent, child: (parent, child) == (10, 11),
+    )
+
+    assert target == FocusTarget(10, 11)
+
+
+def test_focus_target_redacts_opaque_uia_element_from_repr_and_comparison() -> None:
+    private_element = object()
+    target = FocusTarget(10, 11, uia_element=private_element)
+
+    assert "object at" not in repr(target)
+    assert target == FocusTarget(10, 11)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UI Automation uses Windows COM")
+def test_uia_activation_calls_only_focus_operation() -> None:
+    element = FakeUiaElement()
+    results: list[bool] = []
+
+    thread = threading.Thread(target=lambda: results.append(_activate_uia_focus(element)))
+    thread.start()
+    thread.join(2)
+
+    assert thread.is_alive() is False
+    assert results == [True]
+    assert element.focus_count == 1
+
+
+def test_focus_target_uses_top_level_for_custom_ui_without_child_hwnd() -> None:
+    target = _focus_target_from_gui_info(
+        10,
+        0,
+        is_window=lambda handle: handle == 10,
+        is_child=lambda _parent, _child: False,
+    )
+
+    assert target == FocusTarget(10, 10)
+
+
+def test_focus_target_rejects_unrelated_child_by_using_current_top_level() -> None:
+    target = _focus_target_from_gui_info(
+        10,
+        99,
+        is_window=lambda handle: handle in {10, 99},
+        is_child=lambda _parent, _child: False,
+    )
+
+    assert target == FocusTarget(10, 10)
+
+
+def test_focus_target_rejects_invalid_foreground_window() -> None:
+    target = _focus_target_from_gui_info(
+        10,
+        0,
+        is_window=lambda _handle: False,
+        is_child=lambda _parent, _child: False,
+    )
+
+    assert target is None
 
 
 def test_paste_restores_previous_plain_text() -> None:
@@ -120,9 +191,9 @@ def test_paste_restores_previous_plain_text() -> None:
     assert clipboard.text == "previous"
 
 
-def test_targeted_standard_control_uses_direct_paste_without_send_input() -> None:
+def test_targeted_control_restores_focus_and_uses_send_input() -> None:
     clipboard = FakeClipboard("previous")
-    focus = FakeFocusManager(direct=True)
+    focus = FakeFocusManager()
     sent: list[str] = []
     paster = WindowsPaster(
         clipboard=clipboard,
@@ -135,32 +206,10 @@ def test_targeted_standard_control_uses_direct_paste_without_send_input() -> Non
     target = FocusTarget(foreground_window=42, focused_control=43)
     outcome = paster.paste("dictated text", target=target)
 
-    assert focus.activations == []
-    assert focus.direct_pastes == [target]
-    assert sent == []
-    assert outcome == PasteOutcome(True, PasteMethod.DIRECT_CONTROL)
-    assert clipboard.text == "previous"
-
-
-def test_targeted_custom_control_falls_back_to_send_input() -> None:
-    clipboard = FakeClipboard("previous")
-    focus = FakeFocusManager(direct=False)
-    sent: list[str] = []
-    paster = WindowsPaster(
-        clipboard=clipboard,
-        focus_manager=focus,
-        send_paste=lambda: sent.append(clipboard.text or ""),
-        sleep=lambda _seconds: None,
-        restore_delay_seconds=0,
-    )
-    target = FocusTarget(foreground_window=42, focused_control=43)
-
-    outcome = paster.paste("dictated text", target=target)
-
-    assert outcome.pasted is True
-    assert outcome.method is PasteMethod.SEND_INPUT
     assert focus.activations == [target]
     assert sent == ["dictated text"]
+    assert outcome == PasteOutcome(True, PasteMethod.SEND_INPUT)
+    assert clipboard.text == "previous"
 
 
 def test_target_failure_happens_before_clipboard_is_changed() -> None:

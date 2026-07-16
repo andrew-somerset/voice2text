@@ -13,6 +13,7 @@ authors = [{ name = "Andrew Somerset" }]
 dependencies = [
     "httpx>=0.28.1,<0.29",
     "numpy>=2.0,<3",
+    "pywinauto>=0.6.9,<0.7",
     "pywhispercpp>=1.5,<2",
     "sounddevice>=0.5.2,<0.6",
     "soxr>=1.1,<2",
