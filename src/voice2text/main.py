@@ -1,4 +1,4 @@
-"""Application entry point. Integration is added in the ordered milestones."""
+"""Application entry point for persistent local dictation and explicit setup routes."""
 
 from __future__ import annotations
 
@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--test-recording-pill",
         action="store_true",
         help="test the selected trigger, microphone, and volume pill without transcription",
+    )
+    setup_actions.add_argument(
+        "--test-local-dictation",
+        action="store_true",
+        help="transcribe locally and paste into the text box focused when recording began",
     )
     parser.add_argument(
         "--test-seconds",
@@ -114,10 +119,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    print(
-        f"voice2text Windows skeleton is ready with {config.trigger.display_name}; "
-        "integration milestones are not wired yet."
-    )
+    from voice2text.local_runtime import LocalDictationError, run_local_dictation
+
+    duration_seconds = args.test_seconds if args.test_local_dictation else None
+    try:
+        run_local_dictation(config, duration_seconds=duration_seconds)
+    except (LocalDictationError, ValueError) as exc:
+        logging.error("Local dictation failed: %s", exc)
+        return 1
     return 0
 
 
