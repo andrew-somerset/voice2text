@@ -33,6 +33,8 @@ Implemented and unit-tested:
 - a compact bottom-center Mac-style nine-bar pill: white voice-reactive listening bars and an
 	orange transcription shimmer, hosted as a non-activating window;
 - current-session single-instance protection so duplicate listeners cannot duplicate a paste;
+- console-free background launch with a real readiness handshake, clean named shutdown signal, and
+	standard-user sign-in registration;
 - an in-memory paste-blocked fallback card with an explicit **Copy** action;
 - network-free mock Glean streaming and a thread-owned overlay for recording, thinking, answers,
 	citations, cancellation, errors, and recording-limit confirmation;
@@ -58,7 +60,11 @@ Validated on this Windows machine:
 	marker match;
 - a live Right Alt voice attempt completed local Whisper inference in 388 ms and selected the
 	`direct_control` insertion route using the cached pre-Alt focus target;
-- all 146 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- detached `pythonw.exe` launch reported ready, survived the launching terminal, and exited cleanly
+	through the named shutdown event;
+- current-user start-at-sign-in registration was installed and verified without model values,
+	checksums, credentials, or content in its command;
+- all 159 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
@@ -141,6 +147,31 @@ handles while idle and freezes that pre-key target when recording starts. Focus 
 after Windows enters Alt menu mode are rejected, so the paste returns to the editor instead of the
 menu system.
 
+## Keep it ready in the background
+
+Install the current development build for this Windows user's sign-in and start it immediately:
+
+```powershell
+uv run voice2text --install-startup
+```
+
+The command waits until model warm-up, microphone setup, Raw Input registration, and the listener
+all report ready before returning. It launches with `pythonw.exe`, so no terminal window remains.
+Use these lifecycle commands when needed:
+
+```powershell
+uv run voice2text --background-status
+uv run voice2text --stop-background
+uv run voice2text --start-background
+uv run voice2text --uninstall-startup
+```
+
+This prototype registers under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; it requires no
+administrator rights and affects only the signed-in user. In this source checkout, the entry points
+to the current virtual environment's `pythonw.exe`. Moving/deleting the repository or rebuilding
+the virtual environment can invalidate it—rerun `--install-startup`. Enterprise deployment will
+replace this development registration with the signed packaged executable distributed by GM.
+
 ## Test the selected trigger and recording pill now
 
 Run the hardware test from PowerShell. It remains active until explicitly stopped:
@@ -175,6 +206,9 @@ optional `--test-seconds` value also ends it automatically.
 ```powershell
 uv run voice2text --check-config
 uv run voice2text --list-triggers
+uv run voice2text --background-status
+uv run voice2text --start-background
+uv run voice2text --stop-background
 uv run voice2text --test-recording-pill --test-seconds 60
 uv run voice2text --test-local-dictation --test-seconds 60
 uv run pytest
@@ -213,6 +247,9 @@ formats are not preserved in this prototype.
 	text, application names, or typed content.
 - Automatic paste failure restores the prior plain-text clipboard before offering an in-memory
 	fallback. Transcript text enters the clipboard only after an explicit **Copy** action.
+- Background lifecycle uses a current-session mutex plus named ready/stop events. Sign-in startup
+	contains only the console-free module command; model configuration remains in reviewed user
+	configuration and no content or credentials are placed in the startup entry.
 - The Glean route will send only the final locally transcribed query over TLS.
 - Glean answers will be displayed with citations and copied only by explicit user action—never
 	pasted automatically.

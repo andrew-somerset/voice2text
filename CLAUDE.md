@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, targeted Win32 paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, known-content transcription, and focused-control paste/restoration. Direct `WM_PASTE` delivery to a disposable native Win32 edit control and balanced `SendInput` delivery to disposable Windows 11 Notepad both produced exact marker matches. A live Right Alt voice attempt completed inference in 388 ms and selected the `direct_control` insertion route from the cached pre-Alt focus target. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 146 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, targeted Win32 paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, known-content transcription, and focused-control paste/restoration. Direct `WM_PASTE` delivery to a disposable native Win32 edit control and balanced `SendInput` delivery to disposable Windows 11 Notepad both produced exact marker matches. A live Right Alt voice attempt completed inference in 388 ms and selected the `direct_control` insertion route from the cached pre-Alt focus target. Detached `pythonw.exe` launch reported ready after the real model/mic/input startup sequence, survived the launcher, stopped through the named event, and was registered for current-user sign-in without content or model values in its command. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 159 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The default `main.py` route is local-only; OAuth and Chat are not connected to it. Do not describe the current build as GM-deployment-ready.
 
@@ -40,6 +40,7 @@ voice2text/
 │   ├── recording_test.py # bounded trigger/microphone/pill hardware test
 │   ├── local_runtime.py # persistent local transcription and focused paste worker
 │   ├── instance_lock.py # current-session duplicate-listener prevention
+│   ├── background.py # detached launch, ready/stop events, per-user startup
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
 │   ├── auth.py          # OAuth Authorization Code + PKCE and DPAPI storage
@@ -54,6 +55,7 @@ voice2text/
     ├── test_recording_test.py
     ├── test_local_runtime.py
     ├── test_instance_lock.py
+    ├── test_background.py
     ├── test_trigger_settings.py
     ├── test_glean_client.py
     └── fixtures/hello.wav    # short known-content recording
@@ -77,6 +79,7 @@ Threading model:
 - **Transcription worker**: consumes immutable memory-only audio jobs, runs local Whisper, inserts text into the captured target, emits content-free success/no-speech/error categories, and zeros every audio array in `finally`.
 - **Glean worker**: performs OAuth refresh and streams Chat API responses without blocking input or transcription.
 - **UI thread**: owns the compact recording pill or the thinking/answer overlay. Cross-thread updates use immutable queue commands. The pill receives only a normalized volume scalar, never audio samples.
+- **Lifecycle signaling**: a current-session mutex prevents duplicate listeners; named ready/stop events verify detached startup and request clean shutdown without process enumeration or forced termination.
 
 ## Trigger interaction
 
@@ -183,6 +186,13 @@ These Windows details are security and latency requirements. Do not substitute b
 - The application must run as the standard signed-in user. Do not require local admin rights.
 - Show a persistent visible indicator whenever the microphone stream is active.
 
+### Background lifecycle (background.py, instance_lock.py)
+- `--start-background` launches the same verified runtime through the selected environment's `pythonw.exe` with no console. It must wait for a named ready event that is set only after model warm-up, recorder open, Raw Input registration, worker start, and UI readiness.
+- `--stop-background` signals a named current-session event; never locate or terminate arbitrary Python processes by command line.
+- `--install-startup` writes only the console-free module command to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, starts immediately, and rolls registration back if readiness fails. It requires no elevation and affects only the signed-in user.
+- Import only the reviewed non-secret model/trigger environment values when launching from an already-running editor whose environment predates the user settings. Never place model paths, checksums, content, tokens, or credentials directly in the Run command.
+- Source-checkout registration points at the current virtual environment and is development-only. Signed enterprise packaging must replace it through GM software distribution.
+
 ## Commands
 
 ```powershell
@@ -190,6 +200,9 @@ uv sync
 uv run voice2text --configure-trigger
 uv run voice2text --configure-trigger right-alt
 uv run voice2text --list-triggers
+uv run voice2text --install-startup
+uv run voice2text --background-status
+uv run voice2text --stop-background
 uv run voice2text --test-recording-pill
 uv run voice2text
 uv run pytest
@@ -205,7 +218,7 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 
 ## Testing
 
-- CI-safe tests: gesture timing, event routing, recorder buffer and meter logic, Mac-style pill bar targets, test-route cancellation and zeroing, local worker queues, single-instance behavior, direct-control/SendInput paste selection, generation-safe clipboard restoration, transcript filtering, OAuth PKCE utilities, mocked Glean parsing, config validation, and model checksum validation.
+- CI-safe tests: gesture timing, event routing, recorder buffer and meter logic, Mac-style pill bar targets, test-route cancellation and zeroing, local worker queues, single-instance behavior, detached ready/stop lifecycle, startup registry dispatch, direct-control/SendInput paste selection, generation-safe clipboard restoration, transcript filtering, OAuth PKCE utilities, mocked Glean parsing, config validation, and model checksum validation.
 - Gesture tests: hold/release emits local dictation; one tap expires silently; two taps emit exactly one `GLEAN_START`; a standalone third press emits exactly one `GLEAN_STOP`; an in-grace chord does not stop Glean; and an accidental first tap followed by a hold emits local dictation.
 - Test exact threshold boundaries, standalone grace, pre-activation chords, late-chord cancellation, duplicate make/break events, auto-repeat, timeout cancellation, and maximum Glean duration.
 - Windows integration tests: Raw Input emits only configured-trigger transitions plus identity-free chord markers; direct `WM_PASTE` inserts exact text into a disposable native edit control; the clipboard is restored; SendInput uses balanced key-down/key-up events; DPAPI round-trips only for the current user.
@@ -231,7 +244,7 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 6. **Paster — prototype validated** — Win32 clipboard, targeted native-control paste, balanced Ctrl+V fallback, generation-safe plain-text restoration, and the explicit-copy failure card pass. GM-standard application and EDR validation remain required.
 7. **Mock Glean UX — complete** — compact voice-reactive bar pill, orange transcription shimmer, network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible answer-overlay lifecycle pass. Representative display scaling still requires tuning.
 8. **Glean authentication/API — isolated primitives complete; live validation blocked** — public-client PKCE, current-user DPAPI token storage, mocked Chat streaming, citation parsing, bounded responses, and sanitized error mapping pass. Admin registration and two-user permission tests remain required before runtime wiring.
-9. **Integration — local route operational; broader lifecycle pending** — the default command wires Raw Input, gesture deadlines, memory-only recording, resident Whisper, targeted paste, non-activating UI, worker cleanup, and a single-instance lock. Glean routing, tray behavior, device changes, lock/unlock, and full GM-app testing remain pending.
+9. **Integration — local route and persistent startup operational; broader lifecycle pending** — the default command wires Raw Input, gesture deadlines, memory-only recording, resident Whisper, targeted paste, non-activating UI, worker cleanup, single-instance protection, detached readiness, clean named shutdown, and per-user sign-in startup. Glean routing, tray behavior, device changes, lock/unlock, and full GM-app testing remain pending.
 10. **Enterprise packaging** — x64 one-folder executable, signed binaries and installer, managed model payload, SBOM, vulnerability/license scan, and Intune/SCCM pilot.
 
 Do not start a milestone until the previous one's manual test passes. Keep PRs to one milestone each.
