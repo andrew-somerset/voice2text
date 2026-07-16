@@ -27,8 +27,8 @@ Implemented and unit-tested:
 - checksum-verified, resident `pywhispercpp` wrapper with short-input and punctuation filtering;
 - an integrated default local route: selected trigger → memory-only audio → local Whisper → the
 	text control focused when recording began;
-- bounded Win32 UTF-16 clipboard access, direct `WM_PASTE` for standard edit controls, and balanced
-	`SendInput` Ctrl+V fallback for custom application controls;
+- bounded Win32 UTF-16 clipboard access, opaque Windows UI Automation focus restoration, and
+	balanced `SendInput` Ctrl+V delivery;
 - generation-safe asynchronous restoration of the previous plain-text clipboard value;
 - a compact bottom-center Mac-style nine-bar pill: white voice-reactive listening bars and an
 	orange transcription shimmer, hosted as a non-activating window;
@@ -54,17 +54,16 @@ Validated on this Windows machine:
 - current-user DPAPI round trips plus mocked OAuth and Chat transport behavior;
 - a bounded recording-pill hardware test opened the selected Right Alt listener and WASAPI stream,
 	exited successfully, and left no Python process behind;
-- direct clipboard delivery to a disposable native Win32 edit control succeeded and its text
-	matched exactly;
-- balanced `SendInput` delivery to a disposable Windows 11 Notepad instance also produced an exact
-	marker match;
-- a live Right Alt voice attempt completed local Whisper inference in 388 ms and selected the
-	`direct_control` insertion route using the cached pre-Alt focus target;
+- a full production `WindowsFocusManager` + `WindowsPaster` flow captured the opaque UIA editor in
+	Windows 11 Notepad, restored it from the worker thread, and produced an exact marker match through
+	balanced `SendInput`;
+- cross-process `WM_PASTE` was removed after Windows 11 Notepad returned API success without
+	inserting text; the runtime no longer reports that false-success route;
 - detached `pythonw.exe` launch reported ready, survived the launching terminal, and exited cleanly
 	through the named shutdown event;
 - current-user start-at-sign-in registration was installed and verified without model values,
 	checksums, credentials, or content in its command;
-- all 159 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- all 164 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
@@ -137,10 +136,11 @@ uv run voice2text
 
 Keep it running, click into any text box, hold the selected trigger, speak, and release. The small
 bar pill reacts to voice volume, then changes to an orange shimmer during local transcription.
-Standard Windows edit controls receive a direct targeted paste; custom controls use exact-focus
-restoration plus balanced `Ctrl+V`. If Windows or endpoint policy blocks both paths, the prior
-clipboard is restored and a temporary card offers the transcript through an explicit **Copy**
-button. Only one listener can run in the current Windows session.
+The app restores the exact focused element through Windows UI Automation, then sends a balanced
+`Ctrl+V`. UIA is used only for opaque focus capture and `set_focus()`—the runtime never reads the
+element's name, value, text, automation ID, or surrounding content. If focus restoration or input
+is blocked, the prior clipboard is restored and a temporary card offers the transcript through an
+explicit **Copy** button. Only one listener can run in the current Windows session.
 
 For modifier triggers such as Right Alt, the runtime caches only the latest opaque focused-control
 handles while idle and freezes that pre-key target when recording starts. Focus snapshots taken
