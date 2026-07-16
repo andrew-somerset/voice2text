@@ -6,9 +6,9 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 are implemented on `gm_dev`: project skeleton, selectable trigger setup, gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified local Whisper, Win32 paste, the compact recording pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for the original Right Ctrl Raw Input prototype, 48 kHz capture, known-content transcription, focused-control paste/restoration, and the visible mock overlay. The bounded Right Alt recording-pill test now opens the selected trigger listener and WASAPI stream and exits cleanly; visible meter behavior still requires user observation. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and the OAuth-backed Client Chat stream behind mock HTTP transport. The current automated baseline is 120 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, targeted Win32 paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, known-content transcription, and focused-control paste/restoration. Direct `WM_PASTE` delivery to a disposable native Win32 edit control succeeded with exact text. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 144 passing tests plus clean Ruff lint and formatting checks.
 
-Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The OAuth and Chat components are not wired into `main.py`. Do not describe the current build as end-to-end complete or GM-deployment-ready.
+Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The default `main.py` route is local-only; OAuth and Chat are not connected to it. Do not describe the current build as GM-deployment-ready.
 
 ## Tech stack
 
@@ -38,6 +38,8 @@ voice2text/
 │   ├── recorder.py      # WASAPI/sounddevice capture into a buffer
 │   ├── recording_pill.py # compact recording indicator and scalar meter
 │   ├── recording_test.py # bounded trigger/microphone/pill hardware test
+│   ├── local_runtime.py # persistent local transcription and focused paste worker
+│   ├── instance_lock.py # current-session duplicate-listener prevention
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
 │   ├── auth.py          # OAuth Authorization Code + PKCE and DPAPI storage
@@ -50,6 +52,8 @@ voice2text/
     ├── test_recorder.py
     ├── test_recording_pill.py
     ├── test_recording_test.py
+    ├── test_local_runtime.py
+    ├── test_instance_lock.py
     ├── test_trigger_settings.py
     ├── test_glean_client.py
     └── fixtures/hello.wav    # short known-content recording
@@ -70,7 +74,7 @@ Threading model:
 
 - **Windows message thread**: owns the hidden message-only window and processes `WM_INPUT`. It filters immediately for the configured trigger and enqueues tiny immutable events. It never handles audio, inference, HTTP, sounds, or UI rendering.
 - **Audio callback thread**: appends mono `float32` frames to a lock-protected chunk list only while recording.
-- **Transcription worker**: consumes ordered start/stop events, finalizes audio, runs local Whisper, and routes the text to paste or Glean.
+- **Transcription worker**: consumes immutable memory-only audio jobs, runs local Whisper, inserts text into the captured target, emits content-free success/no-speech/error categories, and zeros every audio array in `finally`.
 - **Glean worker**: performs OAuth refresh and streams Chat API responses without blocking input or transcription.
 - **UI thread**: owns the compact recording pill or the thinking/answer overlay. Cross-thread updates use immutable queue commands. The pill receives only a normalized volume scalar, never audio samples.
 
@@ -140,16 +144,19 @@ These Windows details are security and latency requirements. Do not substitute b
 - Keep audio in memory only. Zero/drop references after transcription and never write temporary WAV files outside explicit manual-test commands.
 
 ### Recording pill (recording_pill.py)
-- Show a compact bottom-center always-on-top pill whenever local or Ask Glean capture is active. Local recording uses green; Ask Glean uses orange. The selected trigger name must appear in the release/stop instruction.
-- Animate a short bar meter from the recorder's latest normalized `0..1` scalar. Do not keep level history, transfer audio buffers, draw a waveform, or infer/persist speech content.
+- Show a compact bottom-center always-on-top, non-activating pill whenever local or Ask Glean capture is active. Match the macOS visual language conceptually: nine white bars react to local voice level and nine orange bars shimmer during transcription; do not import AppKit implementation details.
+- Animate only from the recorder's latest normalized `0..1` scalar and ephemeral GUI smoothing state. Do not transfer audio buffers, retain historical levels, infer content, or persist speech data.
 - Tk owns all widgets and cleanup on its dedicated UI thread. Other threads may send only immutable commands through a queue.
 - The `--test-recording-pill` route runs until the pill's close action or `Ctrl+C` by default; `--test-seconds` adds an optional positive bound. It exercises Raw Input, gesture deadlines, WASAPI, the scalar meter, cancellation, and cleanup without transcription, paste, Glean, or disk persistence. Completed test audio must be zeroed immediately. Safe terminal diagnostics may name only the configured trigger and `DOWN`, `UP`, or identity-free chord suppression.
+- When automatic local paste is blocked, reuse the pill's Tk thread to show a temporary in-memory fallback card. Restore the prior clipboard first; place transcript text on the clipboard only after explicit **Copy**.
 
 ### Pasting (paster.py)
-- Write UTF-16 text through the Win32 clipboard APIs using `CF_UNICODETEXT`, then synthesize Ctrl+V with `SendInput`.
-- Save and restore only a previous plain-text clipboard value. Do not claim preservation of rich clipboard formats in v1.
+- Capture only opaque top-level and focused-child handles on trigger-down; never inspect or retain window title, application name, control text, or process content.
+- Write UTF-16 text through `CF_UNICODETEXT`. Prefer targeted `WM_PASTE` for allowlisted standard edit-control classes, which avoids Right Alt menu-mode focus effects. For custom controls, cancel menu mode, restore the exact control, then synthesize a balanced Ctrl+V with `SendInput`.
+- Save and restore only a previous plain-text clipboard value. Restoration must be asynchronous, generation-safe across rapid successive dictations, and conditional so newer external clipboard content is never overwritten. Do not claim preservation of rich formats in v1.
 - Retry `OpenClipboard` briefly because another process may own it. Bound all retries and surface a failure instead of hanging.
 - Add a short configurable clipboard-to-paste delay and restore delay; test Teams, Outlook, browsers, Office, and text editors.
+- Hold one current-session named mutex for the local runtime so multiple listeners cannot create duplicate pastes.
 - Never paste Glean answers automatically. Render answers and citations in the overlay and require an explicit copy action.
 
 ### Glean authentication and API (auth.py, glean_client.py)
@@ -197,10 +204,10 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 
 ## Testing
 
-- CI-safe tests: gesture timing, event routing, recorder buffer and meter logic, recording-pill reduction, test-route cancellation and zeroing, transcript filtering, OAuth PKCE utilities, Glean response parsing with mocked HTTP, config validation, and model checksum validation.
+- CI-safe tests: gesture timing, event routing, recorder buffer and meter logic, Mac-style pill bar targets, test-route cancellation and zeroing, local worker queues, single-instance behavior, direct-control/SendInput paste selection, generation-safe clipboard restoration, transcript filtering, OAuth PKCE utilities, mocked Glean parsing, config validation, and model checksum validation.
 - Gesture tests: hold/release emits local dictation; one tap expires silently; two taps emit exactly one `GLEAN_START`; a standalone third press emits exactly one `GLEAN_STOP`; an in-grace chord does not stop Glean; and an accidental first tap followed by a hold emits local dictation.
 - Test exact threshold boundaries, standalone grace, pre-activation chords, late-chord cancellation, duplicate make/break events, auto-repeat, timeout cancellation, and maximum Glean duration.
-- Windows integration tests: Raw Input emits only configured-trigger transitions plus identity-free chord markers; clipboard text is restored; injected paste has balanced key-down/key-up events; DPAPI round-trips only for the current user.
+- Windows integration tests: Raw Input emits only configured-trigger transitions plus identity-free chord markers; direct `WM_PASTE` inserts exact text into a disposable native edit control; the clipboard is restored; SendInput uses balanced key-down/key-up events; DPAPI round-trips only for the current user.
 - Manual tests: each reviewed trigger on representative GM keyboards, Right Alt/AltGr native behavior, pill placement/scaling/volume response, microphone privacy denial, default-device change, first-word clipping, Teams/Outlook/browser/Office paste behavior, lock/unlock, sleep/resume, remote desktop, and EDR behavior.
 - Live Glean tests require the registered test client and a non-production test plan. Verify permission trimming with two users who have intentionally different document access.
 - Do not claim end-to-end success for any untested hardware, endpoint policy, or live tenant operation.
@@ -220,10 +227,10 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 3. **Windows input — original prototype validated; new choices require hardware checks** — Raw Input registration and Right Ctrl cleanup passed on this machine. Right Alt and other reviewed choices plus chord markers are unit-tested; representative GM keyboard, AltGr, native shortcut, and security review remain required.
 4. **Recorder — prototype validated** — WASAPI capture is active only during recording; native 48 kHz capture and local 16 kHz conversion passed on this machine. Representative-device latency and clipping tests remain required.
 5. **Transcriber — prototype validated** — resident/warmed CPU model, short-input rejection, checksum enforcement, and known-content benchmark passed. Representative GM laptop/model selection remains required.
-6. **Paster — prototype validated** — Win32 clipboard, balanced Ctrl+V, and plain-text restoration passed in a disposable focused control. GM-standard application and EDR validation remains required.
-7. **Mock Glean UX — complete** — compact recording pill, scalar meter, network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible answer-overlay lifecycle pass. Pill appearance and meter response still require representative hardware/UI tuning.
+6. **Paster — prototype validated** — Win32 clipboard, targeted native-control paste, balanced Ctrl+V fallback, generation-safe plain-text restoration, and the explicit-copy failure card pass. GM-standard application and EDR validation remain required.
+7. **Mock Glean UX — complete** — compact voice-reactive bar pill, orange transcription shimmer, network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible answer-overlay lifecycle pass. Representative display scaling still requires tuning.
 8. **Glean authentication/API — isolated primitives complete; live validation blocked** — public-client PKCE, current-user DPAPI token storage, mocked Chat streaming, citation parsing, bounded responses, and sanitized error mapping pass. Admin registration and two-user permission tests remain required before runtime wiring.
-9. **Integration** — queues, lifecycle, tray behavior, device changes, lock/unlock, startup checks, and full end-to-end test.
+9. **Integration — local route operational; broader lifecycle pending** — the default command wires Raw Input, gesture deadlines, memory-only recording, resident Whisper, targeted paste, non-activating UI, worker cleanup, and a single-instance lock. Glean routing, tray behavior, device changes, lock/unlock, and full GM-app testing remain pending.
 10. **Enterprise packaging** — x64 one-folder executable, signed binaries and installer, managed model payload, SBOM, vulnerability/license scan, and Intune/SCCM pilot.
 
 Do not start a milestone until the previous one's manual test passes. Keep PRs to one milestone each.

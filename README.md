@@ -25,9 +25,15 @@ Implemented and unit-tested:
 - memory-only WASAPI capture at the device's native rate, with local high-quality conversion to
 	Whisper's required 16 kHz mono float32 format;
 - checksum-verified, resident `pywhispercpp` wrapper with short-input and punctuation filtering;
-- bounded Win32 UTF-16 clipboard access and balanced `SendInput` Ctrl+V synthesis;
-- a compact bottom-center, always-on-top recording pill with distinct local/Glean colors and a
-	live scalar volume meter;
+- an integrated default local route: selected trigger → memory-only audio → local Whisper → the
+	text control focused when recording began;
+- bounded Win32 UTF-16 clipboard access, direct `WM_PASTE` for standard edit controls, and balanced
+	`SendInput` Ctrl+V fallback for custom application controls;
+- generation-safe asynchronous restoration of the previous plain-text clipboard value;
+- a compact bottom-center Mac-style nine-bar pill: white voice-reactive listening bars and an
+	orange transcription shimmer, hosted as a non-activating window;
+- current-session single-instance protection so duplicate listeners cannot duplicate a paste;
+- an in-memory paste-blocked fallback card with an explicit **Copy** action;
 - network-free mock Glean streaming and a thread-owned overlay for recording, thinking, answers,
 	citations, cancellation, errors, and recording-limit confirmation;
 - isolated OAuth Authorization Code + PKCE primitives with strict same-tenant metadata validation,
@@ -46,7 +52,9 @@ Validated on this Windows machine:
 - current-user DPAPI round trips plus mocked OAuth and Chat transport behavior;
 - a bounded recording-pill hardware test opened the selected Right Alt listener and WASAPI stream,
 	exited successfully, and left no Python process behind;
-- all 120 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- direct clipboard delivery to a disposable native Win32 edit control succeeded and its text
+	matched exactly;
+- all 144 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
@@ -55,16 +63,17 @@ Still gated:
 - Right Alt and the other new choices are unit-tested but still require physical-key and native
 	application-behavior checks on representative GM keyboards. Right Alt may retain normal Windows
 	or application Alt behavior because the listener intentionally does not suppress legacy input.
-- The recording pill and meter are unit-tested, but visible bar response, placement, scaling, and
-	first-word timing still need observation and tuning on representative GM display/audio hardware.
+- The Right Alt trigger, recording pill, meter, and local inference are hardware-validated on this
+	machine. End-to-end automatic insertion still needs representative checks in Teams, Outlook,
+	browsers, Office, and GM-managed endpoint-policy conditions.
 - Live Glean remains disabled until GM and Glean administrators approve a public/native OAuth
 	Authorization Code + PKCE registration that does not put a client secret in the desktop app.
 - The OAuth and Chat components have not been connected to the application runtime or exercised
 	against a live GM tenant.
 - Live Chat permission trimming requires a non-production plan and two approved test users with
 	intentionally different source access.
-- Full runtime orchestration, managed packaging, code signing, security review, and enterprise pilot
-	remain pending.
+- Glean runtime orchestration, tray/device lifecycle, managed packaging, code signing, security
+	review, and enterprise pilot remain pending.
 
 ## Setup
 
@@ -108,6 +117,21 @@ The development benchmark used the official whisper.cpp `ggml-base.en.bin` artif
 requires benchmarking and security review on representative GM laptops; the application never
 downloads a production model at runtime.
 
+## Run local dictation
+
+Start the persistent local app:
+
+```powershell
+uv run voice2text
+```
+
+Keep it running, click into any text box, hold the selected trigger, speak, and release. The small
+bar pill reacts to voice volume, then changes to an orange shimmer during local transcription.
+Standard Windows edit controls receive a direct targeted paste; custom controls use exact-focus
+restoration plus balanced `Ctrl+V`. If Windows or endpoint policy blocks both paths, the prior
+clipboard is restored and a temporary card offers the transcript through an explicit **Copy**
+button. Only one listener can run in the current Windows session.
+
 ## Test the selected trigger and recording pill now
 
 Run the hardware test from PowerShell. It remains active until explicitly stopped:
@@ -124,9 +148,9 @@ suppressed`; it never prints the unrelated key identity. For an optional time-li
 Then:
 
 1. Hold the selected trigger by itself for longer than 80 ms.
-2. Speak while holding it. A small pill should appear at the bottom center; its bars should follow
-	your microphone level.
-3. Release the trigger. The pill briefly reports the captured duration, then hides.
+2. Speak while holding it. A small white-bar pill should appear at the bottom center; bar heights
+	should follow your microphone level.
+3. Release the trigger. This diagnostic discards the audio; the bars briefly change color, then hide.
 4. Press the trigger together with another key. The combination should not remain recording; if
 	the pill appeared after the grace period, it should immediately cancel and hide.
 5. Double-tap the trigger to verify the pill's orange **Ask Glean recording** state, then tap once
@@ -143,6 +167,7 @@ optional `--test-seconds` value also ends it automatically.
 uv run voice2text --check-config
 uv run voice2text --list-triggers
 uv run voice2text --test-recording-pill --test-seconds 60
+uv run voice2text --test-local-dictation --test-seconds 60
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
@@ -175,6 +200,10 @@ formats are not preserved in this prototype.
 	it never sends waveform samples to the pill and never stores level history.
 - Outside explicit first-run selection, Raw Input retains no unrelated key identity, virtual key,
 	text, device, or count. It emits at most one identity-free chord marker per trigger press.
+- Focus targets contain only opaque top-level and child-control handles—never window titles, control
+	text, application names, or typed content.
+- Automatic paste failure restores the prior plain-text clipboard before offering an in-memory
+	fallback. Transcript text enters the clipboard only after an explicit **Copy** action.
 - The Glean route will send only the final locally transcribed query over TLS.
 - Glean answers will be displayed with citations and copied only by explicit user action—never
 	pasted automatically.
