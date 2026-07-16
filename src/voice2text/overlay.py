@@ -52,16 +52,26 @@ logger = logging.getLogger(__name__)
 _BG_WHITE = 0.13  # dark pill/card background
 _BG_ALPHA = 0.94
 
-# Waveform tuning. The level is mapped through a compressive curve (peak**EXP)
-# so quiet speech visibly moves the bars instead of only shouting registering.
-# Lower EXP and higher GAIN = more sensitive to soft voices.
-_N_BARS = 9
+# Waveform tuning. A single traveling sine line: mic level (mapped through a
+# compressive peak**EXP curve so soft voices still register) drives BOTH the
+# amplitude (taller) and the spatial frequency (more crests) of the wave.
 _LEVEL_EXP = 0.4  # <0.5 boosts quiet input more than a plain sqrt would
-_LEVEL_GAIN = 3.2  # applied to peak**EXP; normal speech should fill the bars
-_BAR_IDLE = 0.10  # baseline height so bars always look alive
+_LEVEL_GAIN = 3.2  # applied to peak**EXP; normal speech should fill the wave
 _LEVEL_SMOOTHING = 0.55  # 0..1, higher = snappier response to volume
-_BAR_SMOOTHING = 0.6
 _TICK_SECONDS = 0.033  # ~30fps
+_WAVE_SPEED = 0.34  # phase advance per tick — how fast the wave travels
+_WAVE_MIN_AMP = 1.5  # near-flat resting amplitude at silence (points)
+_WAVE_AMP_GAIN = 11.0  # extra amplitude at full volume (points)
+_WAVE_MIN_CYCLES = 1.5  # crests across the pill at silence
+_WAVE_CYCLE_GAIN = 4.0  # extra crests at full volume
+_WAVE_LINE_WIDTH = 2.4
+
+# FC Barcelona palette. The listening wave is a blaugrana gradient (blue ->
+# garnet across the pill); the transcribing state uses the club gold.
+_BARCA_BLUE = (0.0, 0.30, 0.60)  # ~#004D98
+_BARCA_GARNET = (0.65, 0.0, 0.27)  # ~#A50044
+_BARCA_GOLD = (0.93, 0.73, 0.0)  # ~#EDBB00
+_PILL_BG = (0.03, 0.05, 0.12)  # very dark navy so blaugrana pops
 
 
 class _Action(NSObject):
@@ -89,11 +99,12 @@ def _rounded_fill(bounds, radius: float) -> None:
 
 
 class _PillView(NSView):
-    """Draws the rounded pill plus a live waveform of bars.
+    """Draws the rounded pill plus a single traveling sine-wave line.
 
-    In ``"listening"`` mode the bars react to a mic-level provider (each bar
-    also oscillates so the row wiggles). In ``"transcribing"`` mode they run a
-    gentle level-independent shimmer in a different tint.
+    Mic level drives both the wave's amplitude (taller) and its number of
+    crests (higher frequency), so the line grows and busies up as you speak.
+    Stroked as an FC Barcelona blaugrana gradient (blue -> garnet across the
+    pill) while listening, and in club gold while transcribing.
     """
 
     def initWithFrame_(self, frame):  # noqa: N802
@@ -102,7 +113,6 @@ class _PillView(NSView):
             return None
         self._phase = 0.0
         self._level = 0.0
-        self._bars = [_BAR_IDLE] * _N_BARS
         self._mode = "listening"
         self._provider: Callable[[], float] | None = None
         return self
@@ -113,45 +123,64 @@ class _PillView(NSView):
         self.setNeedsDisplay_(True)
 
     def tick_(self, timer):  # noqa: N802
-        self._phase += 0.22
-
-        target_level = 0.0
+        self._phase += _WAVE_SPEED
+        target = 0.0
         if self._mode == "listening" and self._provider is not None:
             try:
                 raw = max(0.0, float(self._provider()))
             except Exception:
                 raw = 0.0
-            target_level = min(1.0, (raw**_LEVEL_EXP) * _LEVEL_GAIN)
-        self._level += (target_level - self._level) * _LEVEL_SMOOTHING
-
-        for i in range(_N_BARS):
-            if self._mode == "listening":
-                osc = 0.5 + 0.5 * math.sin(self._phase + i * 0.7)
-                target = _BAR_IDLE + (0.15 + 0.85 * osc) * self._level
-            else:  # transcribing shimmer
-                target = 0.22 + 0.18 * (0.5 + 0.5 * math.sin(self._phase * 1.4 + i * 0.9))
-            target = max(0.05, min(1.0, target))
-            self._bars[i] += (target - self._bars[i]) * _BAR_SMOOTHING
-
+            target = min(1.0, (raw**_LEVEL_EXP) * _LEVEL_GAIN)
+        self._level += (target - self._level) * _LEVEL_SMOOTHING
         self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect):  # noqa: N802
         bounds = self.bounds()
-        _rounded_fill(bounds, bounds.size.height / 2.0)
+        radius = bounds.size.height / 2.0
+        bg = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, radius, radius)
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(*_PILL_BG, _BG_ALPHA).setFill()
+        bg.fill()
 
-        bar_w, gap = 6.0, 7.0
-        total = _N_BARS * bar_w + (_N_BARS - 1) * gap
-        x0 = (bounds.size.width - total) / 2.0
-        cy = bounds.size.height / 2.0
-        max_h = bounds.size.height - 18.0
+        w, h = bounds.size.width, bounds.size.height
+        margin = 16.0
+        x0, x1 = margin, w - margin
+        span = max(1.0, x1 - x0)
+        cy = h / 2.0
 
-        color = NSColor.whiteColor() if self._mode == "listening" else NSColor.systemOrangeColor()
-        color.colorWithAlphaComponent_(0.92).set()
-        for i in range(_N_BARS):
-            h = max(3.0, self._bars[i] * max_h)
-            bar = NSMakeRect(x0 + i * (bar_w + gap), cy - h / 2.0, bar_w, h)
-            radius = bar_w / 2.0
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar, radius, radius).fill()
+        listening = self._mode == "listening"
+        if listening:
+            amp = _WAVE_MIN_AMP + self._level * _WAVE_AMP_GAIN
+            cycles = _WAVE_MIN_CYCLES + self._level * _WAVE_CYCLE_GAIN
+        else:  # transcribing: a steady gentle wave in club gold
+            amp = 4.0
+            cycles = 3.0
+
+        wave_number = 2.0 * math.pi * cycles / span
+        steps = max(2, int(span / 2.0))
+
+        def y_at(x: float) -> float:
+            return cy + amp * math.sin(wave_number * (x - x0) - self._phase)
+
+        # Stroke as short segments so the blaugrana gradient runs along the line.
+        prev_x, prev_y = x0, y_at(x0)
+        for i in range(1, steps + 1):
+            x = x0 + span * i / steps
+            y = y_at(x)
+            seg = NSBezierPath.bezierPath()
+            seg.setLineWidth_(_WAVE_LINE_WIDTH)
+            seg.setLineCapStyle_(1)  # round, so segments read as one smooth line
+            seg.moveToPoint_((prev_x, prev_y))
+            seg.lineToPoint_((x, y))
+            if listening:
+                t = (i - 0.5) / steps
+                r = _BARCA_BLUE[0] + (_BARCA_GARNET[0] - _BARCA_BLUE[0]) * t
+                g = _BARCA_BLUE[1] + (_BARCA_GARNET[1] - _BARCA_BLUE[1]) * t
+                b = _BARCA_BLUE[2] + (_BARCA_GARNET[2] - _BARCA_BLUE[2]) * t
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 1.0).set()
+            else:
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(*_BARCA_GOLD, 1.0).set()
+            seg.stroke()
+            prev_x, prev_y = x, y
 
 
 class _CardView(NSView):
