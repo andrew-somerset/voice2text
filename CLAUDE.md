@@ -1,4 +1,4 @@
-# CLAUDE.md — voice2text GM Windows client
+Hello.# CLAUDE.md — voice2text GM Windows client
 
 Windows 11 local voice dictation plus a secure voice route into Glean. Hold a configurable **trigger key**, speak, and release to paste a local transcript into the focused application. Double-tap the trigger to start Ask Glean recording, then tap it a third time to stop and submit. Raw audio and speech recognition remain on-device; only the final Ask Glean query text is sent to GM's Glean tenant.
 
@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, targeted Win32 paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, known-content transcription, and focused-control paste/restoration. Direct `WM_PASTE` delivery to a disposable native Win32 edit control succeeded with exact text. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 144 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, targeted Win32 paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, known-content transcription, and focused-control paste/restoration. Direct `WM_PASTE` delivery to a disposable native Win32 edit control and balanced `SendInput` delivery to disposable Windows 11 Notepad both produced exact marker matches. A live Right Alt voice attempt completed inference in 388 ms and selected the `direct_control` insertion route from the cached pre-Alt focus target. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 146 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The default `main.py` route is local-only; OAuth and Chat are not connected to it. Do not describe the current build as GM-deployment-ready.
 
@@ -152,6 +152,7 @@ These Windows details are security and latency requirements. Do not substitute b
 
 ### Pasting (paster.py)
 - Capture only opaque top-level and focused-child handles on trigger-down; never inspect or retain window title, application name, control text, or process content.
+- While idle, cache the latest valid opaque focus target. For modifier triggers, freeze that pre-key target and reject snapshots taken while `GetGUIThreadInfo` reports menu mode; this prevents Right Alt from replacing the editor target with an application menu.
 - Write UTF-16 text through `CF_UNICODETEXT`. Prefer targeted `WM_PASTE` for allowlisted standard edit-control classes, which avoids Right Alt menu-mode focus effects. For custom controls, cancel menu mode, restore the exact control, then synthesize a balanced Ctrl+V with `SendInput`.
 - Save and restore only a previous plain-text clipboard value. Restoration must be asynchronous, generation-safe across rapid successive dictations, and conditional so newer external clipboard content is never overwritten. Do not claim preservation of rich formats in v1.
 - Retry `OpenClipboard` briefly because another process may own it. Bound all retries and surface a failure instead of hanging.

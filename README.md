@@ -54,7 +54,11 @@ Validated on this Windows machine:
 	exited successfully, and left no Python process behind;
 - direct clipboard delivery to a disposable native Win32 edit control succeeded and its text
 	matched exactly;
-- all 144 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- balanced `SendInput` delivery to a disposable Windows 11 Notepad instance also produced an exact
+	marker match;
+- a live Right Alt voice attempt completed local Whisper inference in 388 ms and selected the
+	`direct_control` insertion route using the cached pre-Alt focus target;
+- all 146 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
@@ -131,6 +135,11 @@ Standard Windows edit controls receive a direct targeted paste; custom controls 
 restoration plus balanced `Ctrl+V`. If Windows or endpoint policy blocks both paths, the prior
 clipboard is restored and a temporary card offers the transcript through an explicit **Copy**
 button. Only one listener can run in the current Windows session.
+
+For modifier triggers such as Right Alt, the runtime caches only the latest opaque focused-control
+handles while idle and freezes that pre-key target when recording starts. Focus snapshots taken
+after Windows enters Alt menu mode are rejected, so the paste returns to the editor instead of the
+menu system.
 
 ## Test the selected trigger and recording pill now
 
