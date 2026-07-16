@@ -15,6 +15,7 @@ from voice2text.gesture import (
     GestureEvent,
     GestureEventKind,
     GestureInput,
+    GestureState,
     GestureStateMachine,
     InputKind,
 )
@@ -83,6 +84,24 @@ class RuntimePaster(Protocol):
 
 class RuntimeFocusManager(Protocol):
     def capture(self) -> FocusTarget | None: ...
+
+
+class FocusTargetCache:
+    """Retain only the most recent opaque focus target observed before trigger-down."""
+
+    def __init__(self) -> None:
+        self._target: FocusTarget | None = None
+
+    def observe(self, target: FocusTarget | None) -> None:
+        if target is not None:
+            self._target = target
+
+    def target_for_press(self, current: FocusTarget | None) -> FocusTarget | None:
+        """Prefer a current non-menu target; otherwise freeze the last idle target."""
+
+        if current is not None:
+            self._target = current
+        return self._target
 
 
 class DictationResultKind(Enum):
@@ -343,6 +362,7 @@ def run_local_dictation(
     paster = WindowsPaster(focus_manager=focus_manager)
     listener = WindowsTriggerListener(transitions.put, config.trigger)
     machine = GestureStateMachine(config.trigger)
+    target_cache = FocusTargetCache()
     instance_lock = SingleInstanceLock()
     if not instance_lock.acquire():
         print("voice2text is already running; the existing listener remains active.")
@@ -368,6 +388,7 @@ def run_local_dictation(
         recorder.open()
         listener.start()
         listener_started = True
+        target_cache.observe(focus_manager.capture())
         controller.show_ready(time.monotonic_ns())
         duration_label = (
             f"for {duration_seconds:g} seconds" if duration_seconds is not None else "until stopped"
@@ -404,7 +425,9 @@ def run_local_dictation(
             now_ns = time.monotonic_ns()
             while transition is not None:
                 if transition.kind is TriggerTransitionKind.DOWN:
-                    controller.remember_target(focus_manager.capture())
+                    controller.remember_target(
+                        target_cache.target_for_press(focus_manager.capture())
+                    )
                 controller.handle(
                     machine.handle(
                         GestureInput(
@@ -421,6 +444,8 @@ def run_local_dictation(
             if gesture_deadline_ns is not None and now_ns >= gesture_deadline_ns:
                 controller.handle(machine.handle(GestureInput(InputKind.TIMER, now_ns)))
             if now_ns >= next_refresh_ns:
+                if machine.state is GestureState.IDLE and not recorder.is_recording:
+                    target_cache.observe(focus_manager.capture())
                 controller.refresh(now_ns)
                 next_refresh_ns = now_ns + _LEVEL_REFRESH_NS
     except KeyboardInterrupt:

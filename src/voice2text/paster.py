@@ -24,6 +24,7 @@ WM_CANCELMODE = 0x001F
 WM_PASTE = 0x0302
 SMTO_ABORTIFHUNG = 0x0002
 _DIRECT_PASTE_CLASSES = ("edit", "richedit", "scintilla")
+_GUI_MENU_FLAGS = 0x0004 | 0x0008 | 0x0010
 
 
 class PasteError(RuntimeError):
@@ -330,6 +331,8 @@ class WindowsFocusManager:
             return None
         info = _GUITHREADINFO(cbSize=ctypes.sizeof(_GUITHREADINFO))
         if not self._user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)):
+            return None
+        if int(info.flags) & _GUI_MENU_FLAGS or info.hwndMenuOwner:
             return None
         focused = info.hwndFocus
         if not focused or not self._user32.IsWindow(focused):

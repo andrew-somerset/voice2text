@@ -7,12 +7,14 @@ from voice2text.local_runtime import (
     DictationJob,
     DictationResult,
     DictationResultKind,
+    FocusTargetCache,
     LocalDictationController,
     LocalTranscriptionWorker,
 )
 from voice2text.paster import FocusTarget, PasteMethod, PasteOutcome
 
 TARGET = FocusTarget(foreground_window=1234, focused_control=1235)
+OTHER_TARGET = FocusTarget(foreground_window=2234, focused_control=2235)
 
 
 class FakeRecorder:
@@ -111,6 +113,21 @@ class FakePaster:
 
 def event(kind: GestureEventKind, timestamp_ns: int = 1_000_000_000) -> GestureEvent:
     return GestureEvent(kind=kind, timestamp_ns=timestamp_ns)
+
+
+def test_focus_cache_freezes_last_idle_target_when_alt_enters_menu_mode() -> None:
+    cache = FocusTargetCache()
+    cache.observe(TARGET)
+
+    assert cache.target_for_press(None) == TARGET
+
+
+def test_focus_cache_uses_new_current_target_when_available() -> None:
+    cache = FocusTargetCache()
+    cache.observe(TARGET)
+
+    assert cache.target_for_press(OTHER_TARGET) == OTHER_TARGET
+    assert cache.target_for_press(None) == OTHER_TARGET
 
 
 def test_controller_captures_audio_for_original_target_and_shows_transcribing() -> None:
