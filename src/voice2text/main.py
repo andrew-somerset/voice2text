@@ -46,6 +46,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="transcribe locally and paste into the text box focused when recording began",
     )
+    setup_actions.add_argument(
+        "--start-background",
+        action="store_true",
+        help="start the persistent listener without a terminal window",
+    )
+    setup_actions.add_argument(
+        "--stop-background",
+        action="store_true",
+        help="ask the persistent listener to shut down cleanly",
+    )
+    setup_actions.add_argument(
+        "--background-status",
+        action="store_true",
+        help="show listener and current-user startup status",
+    )
+    setup_actions.add_argument(
+        "--install-startup",
+        action="store_true",
+        help="start now and register the listener for this user's sign-in",
+    )
+    setup_actions.add_argument(
+        "--uninstall-startup",
+        action="store_true",
+        help="remove sign-in startup and stop the current listener",
+    )
     parser.add_argument(
         "--test-seconds",
         type=float,
@@ -92,6 +117,77 @@ def main(argv: list[str] | None = None) -> int:
             "suppression are enabled."
         )
         return 0
+
+    if any(
+        (
+            args.start_background,
+            args.stop_background,
+            args.background_status,
+            args.install_startup,
+            args.uninstall_startup,
+        )
+    ):
+        from voice2text.background import (
+            BackgroundError,
+            LaunchResult,
+            background_status,
+            install_startup,
+            launch_background,
+            request_background_stop,
+            uninstall_startup,
+        )
+
+        try:
+            if args.background_status:
+                status = background_status()
+                print(f"Listener running: {'yes' if status.running else 'no'}")
+                print(
+                    "Start at sign-in: "
+                    + (
+                        "yes"
+                        if status.startup_current
+                        else "outdated"
+                        if status.startup_installed
+                        else "no"
+                    )
+                )
+                return 0
+            if args.stop_background:
+                signaled = request_background_stop()
+                print("Shutdown requested." if signaled else "No background listener is running.")
+                return 0
+            if args.uninstall_startup:
+                uninstall_startup()
+                request_background_stop()
+                print("Start-at-sign-in registration removed; shutdown requested if running.")
+                return 0
+            if args.install_startup:
+                install_startup()
+                result = launch_background()
+                if result is LaunchResult.FAILED:
+                    uninstall_startup()
+                    logging.basicConfig(level=logging.ERROR)
+                    logging.error(
+                        "Background listener did not become ready; startup was rolled back"
+                    )
+                    return 1
+                print("Background listener is ready and will start at user sign-in.")
+                return 0
+            result = launch_background()
+            if result is LaunchResult.FAILED:
+                logging.basicConfig(level=logging.ERROR)
+                logging.error("Background listener did not become ready")
+                return 1
+            print(
+                "Background listener is already running."
+                if result is LaunchResult.ALREADY_RUNNING
+                else "Background listener is ready."
+            )
+            return 0
+        except BackgroundError as exc:
+            logging.basicConfig(level=logging.ERROR)
+            logging.error("Background lifecycle operation failed: %s", exc)
+            return 1
 
     try:
         config = AppConfig.from_environment()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from voice2text.instance_lock import InstanceLockError, SingleInstanceLock
+from voice2text.instance_lock import InstanceLockError, SingleInstanceLock, is_instance_running
 
 
 class FakeMutexBindings:
@@ -37,6 +37,16 @@ def test_existing_instance_returns_false_and_closes_probe_handle() -> None:
 
     assert lock.acquire() is False
     assert bindings.closed == [99]
+
+
+def test_running_probe_releases_mutex_when_no_instance_exists() -> None:
+    free = FakeMutexBindings()
+    occupied = FakeMutexBindings(error=183)
+
+    assert is_instance_running(bindings=free) is False
+    assert free.closed == [99]
+    assert is_instance_running(bindings=occupied) is True
+    assert occupied.closed == [99]
 
 
 def test_creation_failure_is_reported_without_handle_content() -> None:

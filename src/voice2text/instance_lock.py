@@ -66,6 +66,16 @@ class SingleInstanceLock:
         self.close()
 
 
+def is_instance_running(*, bindings: MutexBindings | None = None) -> bool:
+    """Probe the current session without retaining the mutex when no app is running."""
+
+    lock = SingleInstanceLock(bindings=bindings)
+    if not lock.acquire():
+        return True
+    lock.close()
+    return False
+
+
 class _Win32MutexBindings:
     def __init__(self) -> None:
         if sys.platform != "win32":

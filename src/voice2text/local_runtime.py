@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Protocol
 
+from voice2text.background import RuntimeSignals
 from voice2text.config import AppConfig
 from voice2text.gesture import (
     GestureEvent,
@@ -370,9 +371,11 @@ def run_local_dictation(
 
     pill_started = False
     listener_started = False
+    signals: RuntimeSignals | None = None
     worker: LocalTranscriptionWorker | None = None
     controller: LocalDictationController | None = None
     try:
+        signals = RuntimeSignals()
         pill.start()
         pill_started = True
         print("Loading and warming the checksum-verified local Whisper model...", flush=True)
@@ -390,6 +393,7 @@ def run_local_dictation(
         listener_started = True
         target_cache.observe(focus_manager.capture())
         controller.show_ready(time.monotonic_ns())
+        signals.mark_ready()
         duration_label = (
             f"for {duration_seconds:g} seconds" if duration_seconds is not None else "until stopped"
         )
@@ -409,7 +413,7 @@ def run_local_dictation(
             else None
         )
         next_refresh_ns = time.monotonic_ns()
-        while not stop_requested.is_set():
+        while not stop_requested.is_set() and not signals.stop_requested():
             now_ns = time.monotonic_ns()
             if end_ns is not None and now_ns >= end_ns:
                 break
@@ -479,7 +483,11 @@ def run_local_dictation(
                                 if pill_started:
                                     pill.stop()
                             finally:
-                                instance_lock.close()
+                                try:
+                                    if signals is not None:
+                                        signals.close()
+                                finally:
+                                    instance_lock.close()
     print("Local dictation stopped; no audio or transcript was persisted.")
 
 
