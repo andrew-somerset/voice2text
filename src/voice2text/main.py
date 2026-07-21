@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 from voice2text.config import AppConfig, ConfigError
 from voice2text.trigger_settings import (
@@ -28,6 +29,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-triggers",
         action="store_true",
         help="list the reviewed trigger choices and explain Fn-key limitations",
+    )
+    setup_actions.add_argument(
+        "--list-models",
+        action="store_true",
+        help="list the reviewed Whisper models that setup can fetch and verify",
+    )
+    setup_actions.add_argument(
+        "--setup-model",
+        nargs="?",
+        const="",
+        metavar="MODEL",
+        help="download and checksum-verify a reviewed model (default base.en) for local use",
     )
     setup_actions.add_argument(
         "--configure-trigger",
@@ -77,6 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional bounded duration for --test-recording-pill; default runs until stopped",
     )
+    parser.add_argument(
+        "--model-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="register an already-downloaded model file with --setup-model instead of fetching it",
+    )
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
     return parser
 
@@ -92,6 +112,40 @@ def main(argv: list[str] | None = None) -> int:
             "  Fn is hardware-dependent and is not a universal choice: most laptop firmware "
             "does not expose Fn to Windows Raw Input."
         )
+        return 0
+
+    if args.list_models:
+        from voice2text.model_settings import DEFAULT_MODEL_ID, managed_models
+
+        print("Reviewed Whisper models (checksum-pinned):")
+        for model in managed_models():
+            marker = " (default)" if model.model_id == DEFAULT_MODEL_ID else ""
+            print(f"  {model.model_id:<10} {model.display_name}{marker}")
+            print(f"             {model.description}")
+        print(
+            "  Set up the default with: voice2text --setup-model. To register a file you already "
+            "have: voice2text --setup-model --model-file <path>."
+        )
+        return 0
+
+    if args.setup_model is not None:
+        from voice2text.model_settings import DEFAULT_MODEL_ID, ModelSettingsError
+        from voice2text.model_setup import ModelSetupError, setup_managed_model
+
+        try:
+            requested_model = args.setup_model.strip() or DEFAULT_MODEL_ID
+            result = setup_managed_model(requested_model, source_file=args.model_file)
+        except (ModelSetupError, ModelSettingsError) as exc:
+            logging.basicConfig(level=logging.ERROR)
+            logging.error("Could not set up the model: %s", exc)
+            return 2
+        verb = {
+            "downloaded": "Downloaded and verified",
+            "reused": "Verified existing",
+            "registered": "Registered and verified",
+        }[result.action]
+        print(f"{verb} {result.model.display_name} at {result.settings.path}.")
+        print("Local dictation will use this model automatically; run: voice2text")
         return 0
 
     if args.configure_trigger is not None:

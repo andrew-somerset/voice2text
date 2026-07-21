@@ -14,6 +14,29 @@ transcribed or pasted. Fn is not a universal option because most laptop firmware
 to Windows; it can be enabled only after device-specific hardware validation.
 The current branch is `gm_dev`; the personal macOS design remains separate on `main`.
 
+## Quick start
+
+For a teammate on a GM Windows 11 laptop, from the repository root:
+
+```powershell
+uv sync --dev                                   # install the locked environment (uv installs once)
+uv run voice2text --setup-model                 # download + checksum-verify the model (~148 MB, once)
+uv run voice2text --configure-trigger right-ctrl # pick the key you hold to dictate
+uv run voice2text                               # run it; hold the key, speak, release, it pastes
+```
+
+Also enable **Settings → Privacy & security → Microphone → Let desktop apps access your
+microphone**. `--setup-model` is an explicit, one-time setup step: it stores the model under
+`%LOCALAPPDATA%\voice2text\models\` and records its verified checksum, so no environment variables
+are required and the resident app never downloads a model itself. If direct downloads are blocked on
+a managed network, register a file fetched through an approved channel instead:
+
+```powershell
+uv run voice2text --setup-model --model-file C:\path\to\ggml-base.en.bin
+```
+
+See [Setup](#setup) for managed alternatives and [CLAUDE.md](CLAUDE.md) for the full design.
+
 ## Current status
 
 Implemented and unit-tested:
@@ -113,7 +136,26 @@ can override it with `VOICE2TEXT_TRIGGER_CHOICE=right-alt`. Selecting Right Alt 
 for Right Alt combinations, including typical AltGr use, but does not block the combination's
 normal behavior in Windows or the focused application.
 
-Configure a locally managed Whisper model for real inference:
+Configure a locally managed Whisper model for real inference. The recommended path downloads the
+reviewed default model once and records its verified checksum for you:
+
+```powershell
+uv run voice2text --list-models
+uv run voice2text --setup-model
+```
+
+This stores `ggml-base.en.bin` under `%LOCALAPPDATA%\voice2text\models\`, verifies it against the
+reviewed SHA-256 before installing it, and writes the path and checksum to
+`%LOCALAPPDATA%\voice2text\model.json`. The resident app then loads that model automatically. If
+direct downloads are blocked on a managed network, fetch `ggml-base.en.bin` through an approved
+channel and register the existing file instead:
+
+```powershell
+uv run voice2text --setup-model --model-file C:\path\to\ggml-base.en.bin
+```
+
+A managed deployment can still point at a specific file with environment variables, which take
+precedence over the recorded setup:
 
 ```powershell
 $env:VOICE2TEXT_MODEL_PATH = "C:\managed-models\ggml-base.en.bin"
@@ -121,10 +163,10 @@ $env:VOICE2TEXT_MODEL_SHA256 = "<64-character reviewed SHA-256>"
 ```
 
 Do not put model files, tokens, prompts, transcripts, or answers in source control.
-The development benchmark used the official whisper.cpp `ggml-base.en.bin` artifact with SHA-256
+The reviewed default is the official whisper.cpp `ggml-base.en.bin` artifact with SHA-256
 `a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002`. Production selection still
-requires benchmarking and security review on representative GM laptops; the application never
-downloads a production model at runtime.
+requires benchmarking and security review on representative GM laptops; the resident application
+never downloads a production model at runtime.
 
 ## Run local dictation
 

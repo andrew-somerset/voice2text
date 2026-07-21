@@ -43,6 +43,8 @@ voice2text/
 │   ├── instance_lock.py # current-session duplicate-listener prevention
 │   ├── background.py # detached launch, ready/stop events, per-user startup
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
+│   ├── model_settings.py # reviewed model catalog + atomic per-user model.json
+│   ├── model_setup.py   # explicit checksum-verified model download/registration
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
 │   ├── auth.py          # OAuth Authorization Code + PKCE and DPAPI storage
 │   ├── glean_client.py  # mockable Glean Chat API interface
@@ -51,6 +53,8 @@ voice2text/
 └── tests/
     ├── test_gesture.py
     ├── test_transcriber.py   # transcribe a fixture wav, assert text
+    ├── test_model_settings.py # model catalog, model.json persistence, config discovery
+    ├── test_model_setup.py    # checksum-verified download/registration with injected fetch
     ├── test_recorder.py
     ├── test_recording_pill.py
     ├── test_recording_test.py
@@ -136,7 +140,9 @@ These Windows details are security and latency requirements. Do not substitute b
 - Use `language="en"`, join segment text, disable printing/progress, and benchmark `n_threads` rather than assuming every logical core is faster.
 - Input contract at the `Transcriber` boundary: 16kHz mono float32 numpy array in [-1, 1]. The recorder converts a native WASAPI shared-mode rate to this contract locally; the transcriber itself must never resample or accept another rate.
 - Drop utterances shorter than ~0.3s (accidental taps) — whisper hallucinates on near-empty audio ("Thank you." on silence is the classic failure). Also strip leading/trailing whitespace and discard results that are only punctuation.
+- Strip whisper's non-speech annotations (for example `[BLANK_AUDIO]`, `[ Silence ]`, `[Music]`, `*coughs*`, and musical-note glyphs) before deciding whether anything was said. Holding the trigger without speaking must yield an empty result, not a literal `[BLANK_AUDIO]`. Do not strip dictated parentheses, which are legitimate content.
 - Production must load a locally managed model by path and verify its SHA-256 checksum before use. Never download a model at runtime on a GM endpoint.
+- For developer/prototype reproducibility, an explicit `--setup-model` command may download a reviewed, checksum-pinned model (or register an existing file with `--model-file`) into `%LOCALAPPDATA%\voice2text\models\` and record it in `model.json`. This is a deliberate setup action, separate from the resident runtime, which still verifies the checksum and never downloads a model itself. Enterprise deployment replaces it with GM-managed distribution.
 - Record benchmark results by laptop model, CPU, Whisper model, thread count, utterance duration, and release-to-result latency. Do not claim the 700ms target until measured on representative hardware.
 
 ### Audio (recorder.py)
@@ -199,6 +205,8 @@ These Windows details are security and latency requirements. Do not substitute b
 
 ```powershell
 uv sync
+uv run voice2text --list-models
+uv run voice2text --setup-model
 uv run voice2text --configure-trigger
 uv run voice2text --configure-trigger right-alt
 uv run voice2text --list-triggers

@@ -86,6 +86,51 @@ def test_punctuation_only_result_is_discarded(tmp_path: Path) -> None:
     assert transcriber.transcribe(np.zeros(4_800, dtype=np.float32)) == ""
 
 
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "[BLANK_AUDIO]",
+        "  [BLANK_AUDIO]  ",
+        "[ Silence ]",
+        "[Music]",
+        "*coughing*",
+        "♪♪♪",
+        "[BLANK_AUDIO].",
+    ],
+)
+def test_non_speech_annotation_only_result_is_discarded(tmp_path: Path, annotation: str) -> None:
+    fake = FakeModel(responses=[[FakeSegment(annotation)]])
+    transcriber = Transcriber(
+        model_config(tmp_path),
+        model_factory=lambda *_args: fake,
+        warm_up=False,
+    )
+
+    assert transcriber.transcribe(np.zeros(4_800, dtype=np.float32)) == ""
+
+
+def test_non_speech_annotation_is_stripped_from_surrounding_speech(tmp_path: Path) -> None:
+    fake = FakeModel(responses=[[FakeSegment("hello [BLANK_AUDIO] team")]])
+    transcriber = Transcriber(
+        model_config(tmp_path),
+        model_factory=lambda *_args: fake,
+        warm_up=False,
+    )
+
+    assert transcriber.transcribe(np.zeros(4_800, dtype=np.float32)) == "hello team"
+
+
+def test_dictated_parentheses_are_preserved(tmp_path: Path) -> None:
+    fake = FakeModel(responses=[[FakeSegment("call me (later) today")]])
+    transcriber = Transcriber(
+        model_config(tmp_path),
+        model_factory=lambda *_args: fake,
+        warm_up=False,
+    )
+
+    assert transcriber.transcribe(np.zeros(4_800, dtype=np.float32)) == "call me (later) today"
+
+
 def test_invalid_audio_contract_is_rejected(tmp_path: Path) -> None:
     transcriber = Transcriber(
         model_config(tmp_path),

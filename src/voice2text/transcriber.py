@@ -21,6 +21,11 @@ from voice2text.config import AudioConfig, TranscriberConfig
 LOGGER = logging.getLogger(__name__)
 FloatAudio = NDArray[np.float32]
 _ONLY_PUNCTUATION = re.compile(r"^[\W_]+$", re.UNICODE)
+# whisper.cpp emits bracketed non-speech annotations such as "[BLANK_AUDIO]", "[ Silence ]",
+# "[Music]", "*coughs*", and musical-note glyphs when the audio has no speech (for example
+# holding the trigger without talking). These are never dictated words, so strip them before
+# deciding whether anything was actually said.
+_NON_SPEECH_ANNOTATION = re.compile(r"\[[^\[\]]*\]|\*[^*]*\*|♪", re.UNICODE)
 
 
 class TranscriberError(RuntimeError):
@@ -77,7 +82,8 @@ class Transcriber:
         with self._lock:
             segments = self._model.transcribe(audio)
         text = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
-        normalized = " ".join(text.split())
+        speech_only = _NON_SPEECH_ANNOTATION.sub(" ", text)
+        normalized = " ".join(speech_only.split())
         if not normalized or _ONLY_PUNCTUATION.fullmatch(normalized):
             return ""
         return normalized

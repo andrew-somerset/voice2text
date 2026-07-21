@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from voice2text.model_settings import ModelSettingsError, load_model_settings
 from voice2text.trigger_settings import (
     TriggerSettingsError,
     describe_trigger,
@@ -165,7 +166,12 @@ class AppConfig:
     verbose: bool = False
 
     @classmethod
-    def from_environment(cls, *, trigger_settings_path: Path | None = None) -> AppConfig:
+    def from_environment(
+        cls,
+        *,
+        trigger_settings_path: Path | None = None,
+        model_settings_path: Path | None = None,
+    ) -> AppConfig:
         """Build configuration from non-secret environment values."""
 
         mode = os.getenv("VOICE2TEXT_GLEAN_MODE", "mock").strip().lower()
@@ -184,6 +190,19 @@ class AppConfig:
             )
         except TriggerSettingsError as exc:
             raise ConfigError(str(exc)) from None
+
+        env_model_path = os.getenv("VOICE2TEXT_MODEL_PATH")
+        env_model_sha256 = os.getenv("VOICE2TEXT_MODEL_SHA256")
+        if env_model_path or env_model_sha256:
+            model_path = _optional_path(env_model_path)
+            model_sha256 = env_model_sha256 or None
+        else:
+            try:
+                saved_model = load_model_settings(model_settings_path)
+            except ModelSettingsError as exc:
+                raise ConfigError(str(exc)) from None
+            model_path = saved_model.path if saved_model is not None else None
+            model_sha256 = saved_model.sha256 if saved_model is not None else None
 
         trigger_scan_code_value = os.getenv("VOICE2TEXT_TRIGGER_SCAN_CODE")
         trigger_extended_value = os.getenv("VOICE2TEXT_TRIGGER_EXTENDED")
@@ -233,8 +252,8 @@ class AppConfig:
                 ),
             ),
             transcriber=TranscriberConfig(
-                model_path=_optional_path(os.getenv("VOICE2TEXT_MODEL_PATH")),
-                model_sha256=os.getenv("VOICE2TEXT_MODEL_SHA256") or None,
+                model_path=model_path,
+                model_sha256=model_sha256,
                 n_threads=int(
                     os.getenv(
                         "VOICE2TEXT_WHISPER_THREADS",
