@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import voice2text.background as background
 import voice2text.local_runtime as local_runtime
+import voice2text.onboarding as onboarding
 from voice2text.main import main
 
 
@@ -29,6 +30,19 @@ def test_explicit_local_test_can_be_bounded(monkeypatch) -> None:
 
     assert main(["--test-local-dictation", "--test-seconds", "5"]) == 0
     assert durations == [5.0]
+
+
+def test_first_run_and_settings_open_the_guided_wizard(monkeypatch) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        onboarding,
+        "run_first_run_wizard",
+        lambda *, reconfigure=False: calls.append(reconfigure) or True,
+    )
+
+    assert main(["--first-run"]) == 0
+    assert main(["--settings"]) == 0
+    assert calls == [False, True]
 
 
 def test_start_background_reports_readiness(monkeypatch, capsys) -> None:

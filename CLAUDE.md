@@ -6,7 +6,7 @@ This file describes the Windows-first `gm_dev` branch. The personal macOS design
 
 ## Project status
 
-Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, focused Windows paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, and known-content transcription. The full production focus/paste flow captured an opaque UIA editor in Windows 11 Notepad, restored it from the worker thread, and inserted an exact marker through balanced `SendInput`. Cross-process `WM_PASTE` was removed after it returned false API success without inserting text. Detached `pythonw.exe` launch reported ready after the real model/mic/input startup sequence, survived the launcher, stopped through the named event, and was registered for current-user sign-in without content or model values in its command. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 190 passing tests plus clean Ruff lint and formatting checks.
+Milestones 1–7 and the persistent local runtime are implemented on `gm_dev`: selectable trigger setup, standalone-key gesture logic, Raw Input, native-rate WASAPI capture with local resampling, checksum-verified resident Whisper, focused Windows paste, the compact Mac-style bar pill, and the network-free mock Glean overlay. Hardware checks passed on this Windows machine for Right Alt Raw Input, 48 kHz capture, live scalar metering, model load/warm-up, and known-content transcription. The full production focus/paste flow captured an opaque UIA editor in Windows 11 Notepad, restored it from the worker thread, and inserted an exact marker through balanced `SendInput`. Cross-process `WM_PASTE` was removed after it returned false API success without inserting text. Detached `pythonw.exe` launch reported ready after the real model/mic/input startup sequence, survived the launcher, stopped through the named event, and was registered for current-user sign-in without content or model values in its command. Guided standard-user onboarding, notification-area settings, a cx_Freeze one-folder build, bundled-model discovery, and an Inno Setup per-user installer are implemented for controlled pilot validation. Isolated Milestone 8 primitives cover public-client OAuth Authorization Code + PKCE, strict metadata and loopback validation, current-user DPAPI refresh-token storage, and OAuth-backed Client Chat behind mock HTTP transport. The current automated baseline is 207 passing tests plus clean Ruff lint and formatting checks.
 
 Milestone 8 is not live-validated or complete. Live Glean remains disabled until GM and Glean administrators approve a public/native Authorization Code + PKCE registration with no desktop client secret and provide a non-production permission-test plan. The default `main.py` route is local-only; OAuth and Chat are not connected to it. Do not describe the current build as GM-deployment-ready.
 
@@ -45,6 +45,8 @@ voice2text/
 │   ├── transcriber.py   # pywhispercpp wrapper, model loaded once
 │   ├── model_settings.py # reviewed model catalog + atomic per-user model.json
 │   ├── model_setup.py   # explicit checksum-verified model download/registration
+│   ├── onboarding.py    # guided model/microphone/trigger/startup first-run UI
+│   ├── tray.py          # notification-area Settings and clean Exit controls
 │   ├── paster.py        # Windows clipboard + SendInput Ctrl+V
 │   ├── auth.py          # OAuth Authorization Code + PKCE and DPAPI storage
 │   ├── glean_client.py  # mockable Glean Chat API interface
@@ -207,6 +209,8 @@ These Windows details are security and latency requirements. Do not substitute b
 uv sync
 uv run voice2text --list-models
 uv run voice2text --setup-model
+uv run voice2text --first-run
+uv run voice2text --settings
 uv run voice2text --configure-trigger
 uv run voice2text --configure-trigger right-alt
 uv run voice2text --list-triggers
@@ -254,8 +258,8 @@ Hardware/OS adapters should have `if __name__ == "__main__":` manual-test entry 
 6. **Paster — prototype validated** — opaque UIA/Win32 focus capture, balanced Ctrl+V, generation-safe plain-text restoration, and the explicit-copy failure card pass. GM-standard application and EDR validation remain required.
 7. **Mock Glean UX — complete** — compact voice-reactive bar pill, orange transcription shimmer, network-free streamed fake answer, citations, cancellation, errors, recording-limit state, and visible answer-overlay lifecycle pass. Representative display scaling still requires tuning.
 8. **Glean authentication/API — isolated primitives complete; live validation blocked** — public-client PKCE, current-user DPAPI token storage, mocked Chat streaming, citation parsing, bounded responses, and sanitized error mapping pass. Admin registration and two-user permission tests remain required before runtime wiring.
-9. **Integration — local route and persistent startup operational; broader lifecycle pending** — the default command wires Raw Input, gesture deadlines, memory-only recording, resident Whisper, targeted paste, non-activating UI, worker cleanup, single-instance protection, detached readiness, clean named shutdown, and per-user sign-in startup. Glean routing, tray behavior, device changes, lock/unlock, and full GM-app testing remain pending.
-10. **Enterprise packaging** — x64 one-folder executable, signed binaries and installer, managed model payload, SBOM, vulnerability/license scan, and Intune/SCCM pilot.
+9. **Integration — local route, tray settings, and persistent startup operational; broader lifecycle pending** — the default command wires Raw Input, gesture deadlines, memory-only recording, resident Whisper, targeted paste, non-activating UI, notification-area settings/exit controls, worker cleanup, single-instance protection, detached readiness, clean named shutdown, and per-user sign-in startup. Glean routing, device changes, lock/unlock, and full GM-app testing remain pending.
+10. **Enterprise packaging — pilot build implemented; managed release pending** — x64 cx_Freeze one-folder executable, bundled checksum-pinned model, guided first-run UI, notification-area settings, and Inno Setup per-user installer are implemented and locally validated. Company code signing, SBOM, vulnerability/license scan, EDR approval, and Intune/SCCM pilot remain required for broad deployment.
 
 Do not start a milestone until the previous one's manual test passes. Keep PRs to one milestone each.
 

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +122,29 @@ def default_model_settings_path() -> Path:
     """Return the per-user, non-roaming model settings path used by setup."""
 
     return _local_app_data() / "model.json"
+
+
+def bundled_model_settings(
+    *,
+    executable: Path | None = None,
+    frozen: bool | None = None,
+) -> ModelSettings | None:
+    """Resolve the reviewed model shipped beside a frozen one-folder executable.
+
+    Source checkouts never gain an implicit model path. A packaged build may place the pinned
+    default under ``models`` next to the executable; the normal ``Transcriber`` checksum gate
+    still verifies the complete file before loading it.
+    """
+
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    if not is_frozen:
+        return None
+    model = managed_model(DEFAULT_MODEL_ID)
+    current = (executable or Path(sys.executable)).expanduser().resolve()
+    model_path = current.parent / "models" / model.file_name
+    if not model_path.is_file():
+        return None
+    return ModelSettings(path=model_path, sha256=model.sha256)
 
 
 def load_model_settings(path: Path | None = None) -> ModelSettings | None:

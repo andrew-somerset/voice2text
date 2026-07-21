@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Protocol
 
 from voice2text.config import AppConfig
@@ -32,6 +33,13 @@ _READY_VISIBLE_NS = 1_500_000_000
 
 class RecordingPillTestError(RuntimeError):
     """The local hardware test could not start or finish safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingTestOutcome:
+    """Content-free result reported after the bounded hardware test."""
+
+    capture_completed: bool
 
 
 class RecorderSurface(Protocol):
@@ -73,10 +81,12 @@ class RecordingTestController:
         trigger_name: str,
         recorder: RecorderSurface,
         pill: PillSurface,
+        on_capture_complete: Callable[[float], None] | None = None,
     ) -> None:
         self._trigger_name = trigger_name
         self._recorder = recorder
         self._pill = pill
+        self._on_capture_complete = on_capture_complete or (lambda _duration: None)
         self._hide_deadline_ns: int | None = None
 
     def handle(self, events: tuple[GestureEvent, ...]) -> None:
@@ -147,6 +157,7 @@ class RecordingTestController:
             feedback = message or f"{duration_seconds:.1f}s captured - test audio discarded"
             self._pill.show_complete(feedback)
             self._hide_deadline_ns = timestamp_ns + _COMPLETE_VISIBLE_NS
+            self._on_capture_complete(duration_seconds)
         finally:
             audio.fill(0)
 
@@ -162,7 +173,9 @@ def run_recording_pill_test(
         WindowsTriggerListener,
     ]
     | None = None,
-) -> None:
+    on_capture_complete: Callable[[float], None] | None = None,
+    stop_after_capture: bool = False,
+) -> RecordingTestOutcome:
     """Exercise the real trigger, microphone, and pill without inference, paste, or network."""
 
     if duration_seconds is not None and duration_seconds <= 0:
@@ -182,10 +195,21 @@ def run_recording_pill_test(
         else WindowsTriggerListener(transitions.put, config.trigger)
     )
     machine = GestureStateMachine(config.trigger)
+    capture_completed = False
+
+    def capture_complete(duration: float) -> None:
+        nonlocal capture_completed
+        capture_completed = True
+        if on_capture_complete is not None:
+            on_capture_complete(duration)
+        if stop_after_capture:
+            stop_requested.set()
+
     controller = RecordingTestController(
         trigger_name=config.trigger.display_name,
         recorder=recorder,
         pill=pill,
+        on_capture_complete=capture_complete,
     )
 
     listener_started = False
@@ -275,6 +299,7 @@ def run_recording_pill_test(
                     if pill_started:
                         pill.stop()
     print("Recording-pill test finished; all captured audio was discarded.")
+    return RecordingTestOutcome(capture_completed=capture_completed)
 
 
 def _input_kind(kind: TriggerTransitionKind) -> InputKind:

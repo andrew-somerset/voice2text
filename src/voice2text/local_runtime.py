@@ -30,6 +30,7 @@ from voice2text.paster import FocusTarget, PasteOutcome, WindowsFocusManager, Wi
 from voice2text.recorder import FloatAudio, Recorder
 from voice2text.recording_pill import RecordingPill
 from voice2text.transcriber import Transcriber
+from voice2text.tray import TrayError, TrayIcon
 
 LOGGER = logging.getLogger(__name__)
 _LEVEL_REFRESH_NS = 33_000_000
@@ -358,6 +359,10 @@ def run_local_dictation(
     transitions: queue.Queue[TriggerTransition] = queue.Queue()
     stop_requested = threading.Event()
     pill = RecordingPill(on_cancel=stop_requested.set)
+    tray = TrayIcon(
+        trigger_name=config.trigger.display_name,
+        on_exit=stop_requested.set,
+    )
     recorder = Recorder(config.audio)
     focus_manager = WindowsFocusManager()
     paster = WindowsPaster(focus_manager=focus_manager)
@@ -370,6 +375,7 @@ def run_local_dictation(
         return
 
     pill_started = False
+    tray_started = False
     listener_started = False
     signals: RuntimeSignals | None = None
     worker: LocalTranscriptionWorker | None = None
@@ -391,6 +397,11 @@ def run_local_dictation(
         recorder.open()
         listener.start()
         listener_started = True
+        try:
+            tray.start()
+            tray_started = True
+        except TrayError:
+            LOGGER.warning("Notification-area controls are unavailable; dictation remains active")
         target_cache.observe(focus_manager.capture())
         controller.show_ready(time.monotonic_ns())
         signals.mark_ready()
@@ -480,14 +491,18 @@ def run_local_dictation(
                             recorder.close()
                         finally:
                             try:
-                                if pill_started:
-                                    pill.stop()
+                                if tray_started:
+                                    tray.stop()
                             finally:
                                 try:
-                                    if signals is not None:
-                                        signals.close()
+                                    if pill_started:
+                                        pill.stop()
                                 finally:
-                                    instance_lock.close()
+                                    try:
+                                        if signals is not None:
+                                            signals.close()
+                                    finally:
+                                        instance_lock.close()
     print("Local dictation stopped; no audio or transcript was persisted.")
 
 

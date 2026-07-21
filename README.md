@@ -14,9 +14,33 @@ transcribed or pasted. Fn is not a universal option because most laptop firmware
 to Windows; it can be enabled only after device-specific hardware validation.
 The current branch is `gm_dev`; the personal macOS design remains separate on `main`.
 
-## Quick start
+## Install for teammates
 
-For a teammate on a GM Windows 11 laptop, from the repository root:
+Give a teammate the
+[Voice2Text 0.2.0 installer](https://github.com/andrew-somerset/voice2text/releases/download/v0.2.0/Voice2Text-Setup-0.2.0.exe).
+They double-click it; no Python, Git, terminal, administrator rights, model download, or
+environment variables are required. The installer includes the checksum-pinned local speech model
+and opens a three-step setup window:
+
+1. Voice2Text verifies the bundled local model.
+2. It checks microphone access. If Windows blocks it, **Open Windows microphone settings** opens
+	the exact privacy page and explains that both **Microphone access** and **Let desktop apps access
+	your microphone** must be On. **Check again** verifies the change.
+3. The user chooses Right Ctrl, Right Alt, Right Shift, F8, or F9. An optional live test confirms
+	the key and microphone without transcribing, saving, or sending the test audio.
+
+Selecting **Finish setup** starts Voice2Text immediately and registers it for every user sign-in.
+It then runs without a console; the notification-area icon provides **Settings** and **Exit until
+next sign-in**. The microphone is active only while the selected key is held.
+
+The local pilot artifact is written to `dist\Voice2Text-Setup-0.2.0.exe`. It is not committed to
+Git because it is a generated ~150 MB binary. Before broad team distribution, sign the installer
+with an approved company code-signing certificate so Windows SmartScreen and endpoint policy can
+identify its publisher.
+
+## Developer quick start
+
+From the repository root:
 
 ```powershell
 uv sync --dev                                   # install the locked environment (uv installs once)
@@ -36,6 +60,21 @@ uv run voice2text --setup-model --model-file C:\path\to\ggml-base.en.bin
 ```
 
 See [Setup](#setup) for managed alternatives and [CLAUDE.md](CLAUDE.md) for the full design.
+
+## Build the Windows installer
+
+On a Windows build machine, install Inno Setup 6 once and prepare the reviewed model, then run:
+
+```powershell
+winget install --id JRSoftware.InnoSetup -e --source winget --scope user
+uv run voice2text --setup-model
+powershell -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
+```
+
+The build script recreates the locked environment, freezes a one-folder GUI application, bundles
+the model only after verifying SHA-256, compiles the per-user installer, and prints the final
+installer hash. The installer supports standard Inno Setup silent deployment switches for a later
+Intune/SCCM pilot, while normal double-click installation always opens guided first-run setup.
 
 ## Current status
 
@@ -86,7 +125,9 @@ Validated on this Windows machine:
 	through the named shutdown event;
 - current-user start-at-sign-in registration was installed and verified without model values,
 	checksums, credentials, or content in its command;
-- all 190 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- all 207 CI-safe tests, Ruff lint, and Ruff formatting checks;
+- a guided microphone/trigger first-run workflow, notification-area settings control, frozen
+	one-folder build, bundled-model verification, and per-user Windows installer.
 
 Still gated:
 
@@ -104,8 +145,9 @@ Still gated:
 	against a live GM tenant.
 - Live Chat permission trimming requires a non-production plan and two approved test users with
 	intentionally different source access.
-- Glean runtime orchestration, tray/device lifecycle, managed packaging, code signing, security
-	review, and enterprise pilot remain pending.
+- Glean runtime orchestration, device-change lifecycle, company code signing, security review, and
+	enterprise Intune/SCCM pilot remain pending. The unsigned installer is for controlled local
+	validation, not broad managed deployment.
 
 ## Setup
 

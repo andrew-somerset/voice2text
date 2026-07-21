@@ -9,7 +9,9 @@ import pytest
 from voice2text.config import AppConfig
 from voice2text.model_settings import (
     DEFAULT_MODEL_ID,
+    ModelSettings,
     ModelSettingsError,
+    bundled_model_settings,
     load_model_settings,
     managed_model,
     managed_models,
@@ -55,6 +57,24 @@ def test_settings_round_trip_is_small_atomic_and_non_secret(tmp_path: Path) -> N
 
 def test_missing_settings_returns_none(tmp_path: Path) -> None:
     assert load_model_settings(tmp_path / "model.json") is None
+
+
+def test_frozen_build_discovers_only_a_bundled_reviewed_model(tmp_path: Path) -> None:
+    executable = tmp_path / "Voice2Text.exe"
+    model = managed_model(DEFAULT_MODEL_ID)
+    model_path = tmp_path / "models" / model.file_name
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"packaged-model-fixture")
+
+    assert bundled_model_settings(executable=executable, frozen=False) is None
+    assert bundled_model_settings(executable=executable, frozen=True) == ModelSettings(
+        path=model_path,
+        sha256=model.sha256,
+    )
+
+
+def test_frozen_build_rejects_a_missing_bundled_model(tmp_path: Path) -> None:
+    assert bundled_model_settings(executable=tmp_path / "Voice2Text.exe", frozen=True) is None
 
 
 def test_invalid_settings_fail_with_actionable_errors(tmp_path: Path) -> None:

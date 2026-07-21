@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from voice2text.model_settings import ModelSettingsError, load_model_settings
+from voice2text.model_settings import (
+    ModelSettingsError,
+    bundled_model_settings,
+    load_model_settings,
+)
 from voice2text.trigger_settings import (
     TriggerSettingsError,
     describe_trigger,
@@ -201,8 +205,9 @@ class AppConfig:
                 saved_model = load_model_settings(model_settings_path)
             except ModelSettingsError as exc:
                 raise ConfigError(str(exc)) from None
-            model_path = saved_model.path if saved_model is not None else None
-            model_sha256 = saved_model.sha256 if saved_model is not None else None
+            resolved_model = saved_model or bundled_model_settings()
+            model_path = resolved_model.path if resolved_model is not None else None
+            model_sha256 = resolved_model.sha256 if resolved_model is not None else None
 
         trigger_scan_code_value = os.getenv("VOICE2TEXT_TRIGGER_SCAN_CODE")
         trigger_extended_value = os.getenv("VOICE2TEXT_TRIGGER_EXTENDED")

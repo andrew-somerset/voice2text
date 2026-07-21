@@ -26,6 +26,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate configuration and exit without opening the microphone",
     )
     setup_actions.add_argument(
+        "--first-run",
+        action="store_true",
+        help="open the guided installer setup and start Voice2Text at sign-in",
+    )
+    setup_actions.add_argument(
+        "--settings",
+        action="store_true",
+        help="reopen guided microphone and recording-key settings",
+    )
+    setup_actions.add_argument(
         "--list-triggers",
         action="store_true",
         help="list the reviewed trigger choices and explain Fn-key limitations",
@@ -103,6 +113,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.first_run or args.settings:
+        from voice2text.onboarding import OnboardingError, run_first_run_wizard
+
+        try:
+            completed = run_first_run_wizard(reconfigure=args.settings)
+        except OnboardingError as exc:
+            logging.basicConfig(level=logging.ERROR)
+            logging.error("Voice2Text setup could not open: %s", exc)
+            return 2
+        return 0 if completed else 1
 
     if args.list_triggers:
         print("Available trigger choices:")

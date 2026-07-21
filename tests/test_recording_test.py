@@ -69,10 +69,12 @@ def event(kind: GestureEventKind, timestamp_ns: int = 1_000_000_000) -> GestureE
 def test_local_test_route_shows_meter_and_zeroes_discarded_audio() -> None:
     recorder = FakeRecorder()
     pill = FakePill()
+    completed: list[float] = []
     controller = RecordingTestController(
         trigger_name="Right Alt",
         recorder=recorder,
         pill=pill,
+        on_capture_complete=completed.append,
     )
 
     controller.handle((event(GestureEventKind.LOCAL_START),))
@@ -84,6 +86,7 @@ def test_local_test_route_shows_meter_and_zeroes_discarded_audio() -> None:
     assert ("local", "Right Alt") in pill.calls
     assert ("level", 0.64) in pill.calls
     assert ("complete", "1.0s captured - test audio discarded") in pill.calls
+    assert completed == [1.0]
     assert recorder.last_audio is not None
     assert np.count_nonzero(recorder.last_audio) == 0
 
