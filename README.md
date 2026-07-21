@@ -86,7 +86,7 @@ Validated on this Windows machine:
 	through the named shutdown event;
 - current-user start-at-sign-in registration was installed and verified without model values,
 	checksums, credentials, or content in its command;
-- all 164 CI-safe tests, Ruff lint, and Ruff formatting checks.
+- all 190 CI-safe tests, Ruff lint, and Ruff formatting checks.
 
 Still gated:
 
